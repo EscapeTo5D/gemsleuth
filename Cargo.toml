@@ -6,3 +6,11 @@ edition = "2024"
 [lib]
 name = "gemsleuth"
 path = "src/lib.rs"
+
+[[bin]]
+name = "gemsleuth"
+path = "src/main.rs"
+
+[dependencies]
+eframe = "0.36.1"
+image = { version = "0.25.10", default-features = false, features = ["png"] }

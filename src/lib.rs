@@ -1,4 +1,5 @@
 pub mod core;
+pub mod gui;
 
 pub use core::judge::judge;
 pub use core::model::{Record, RecordError, Settings, SettingsError};
