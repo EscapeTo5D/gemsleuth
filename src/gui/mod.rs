@@ -227,9 +227,7 @@ impl eframe::App for GemsleuthApp {
                     &mut self.solve_outcome,
                     &self.cached.suspects,
                 ),
-                Tab::Assistant => {
-                    ui.label("陪玩助手面板在 Task 14 接入");
-                }
+                Tab::Assistant => assistant_panel::show(ui, &self.assets, &self.cached),
             }
             confirm_dialog(
                 ui,
