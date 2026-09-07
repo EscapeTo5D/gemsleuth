@@ -114,7 +114,13 @@ fn settings_bar(ui: &mut egui::Ui, session: &mut SessionState, pending: &mut Opt
     });
 }
 
-fn confirm_dialog(ui: &mut egui::Ui, pending: &mut Option<Settings>, session: &mut SessionState, dirty: &mut bool) {
+fn confirm_dialog(
+    ui: &mut egui::Ui,
+    pending: &mut Option<Settings>,
+    session: &mut SessionState,
+    editor: &mut RecordEditor,
+    dirty: &mut bool,
+) {
     if pending.is_none() {
         return;
     }
@@ -129,6 +135,7 @@ fn confirm_dialog(ui: &mut egui::Ui, pending: &mut Option<Settings>, session: &m
                 if ui.button("确定").clicked() {
                     session.settings = pending.take().unwrap();
                     session.records.clear();
+                    editor.reset(); // 同步清空编辑器,防止悬空 editing 索引(规格 §5.1)
                     *dirty = true;
                 }
                 if ui.button("取消").clicked() {
@@ -185,7 +192,13 @@ impl eframe::App for GemsleuthApp {
             ui.separator();
             // Task 13/14 接入结果区,暂以占位标签过渡
             ui.label(format!("实时候选数:{}", self.cached.candidates.len()));
-            confirm_dialog(ui, &mut self.pending_settings, &mut self.session, &mut self.dirty);
+            confirm_dialog(
+                ui,
+                &mut self.pending_settings,
+                &mut self.session,
+                &mut self.editor,
+                &mut self.dirty,
+            );
         });
     }
 }

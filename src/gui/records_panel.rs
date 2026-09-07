@@ -73,8 +73,10 @@ pub fn show(
     }
     if let Some(i) = delete {
         session.records.remove(i);
-        if editor.editing == Some(i) {
-            editor.reset();
+        match editor.editing {
+            Some(e) if e == i => editor.reset(),
+            Some(e) if e > i => editor.editing = Some(e - 1),
+            _ => {}
         }
         *dirty = true;
     }
@@ -127,10 +129,20 @@ pub fn show(
     let valid_and_full = editor.slots.len() == session.settings.slots
         && candidate.validate(&session.settings).is_ok();
     if valid_and_full {
+        // 规格 F4:「改」仅覆盖宝石与两个计数,保存时保留该行启用状态
+        let enabled = match editor.editing {
+            Some(i) => session.records[i].enabled,
+            None => true,
+        };
         ui.horizontal(|ui| {
             if let Some(i) = editor.editing {
                 if ui.button("保存修改").clicked() {
-                    session.records[i] = candidate;
+                    session.records[i] = Record {
+                        guess: candidate.guess.clone(),
+                        exact: candidate.exact,
+                        partial: candidate.partial,
+                        enabled,
+                    };
                     editor.reset();
                     *dirty = true;
                 }
