@@ -1,5 +1,7 @@
 //! 全空间枚举 + 过滤 + 求解编排(§4.3)。
 
+use crate::core::judge::judge;
+use crate::core::model::Record;
 use crate::core::model::Settings;
 
 /// 枚举全部可能答案(§4.3 第 1 步)。
@@ -49,6 +51,20 @@ pub fn enumerate_space(settings: &Settings) -> Vec<Vec<u8>> {
     out
 }
 
+/// 返回使所有 enabled 记录的判定反馈与录入值完全一致的候选(§4.3 第 2 步)。
+/// 禁用的记录不参与过滤(F4/F5)。保持枚举序。
+pub fn filter_candidates(settings: &Settings, records: &[Record]) -> Vec<Vec<u8>> {
+    enumerate_space(settings)
+        .into_iter()
+        .filter(|cand| {
+            records
+                .iter()
+                .filter(|r| r.enabled)
+                .all(|r| judge(&r.guess, cand) == (r.exact, r.partial))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -83,5 +99,59 @@ mod tests {
     #[test]
     fn permutation_space_8_colors() {
         assert_eq!(enumerate_space(&Settings { colors: 8, slots: 4, repeats: false }).len(), 1680);
+    }
+
+    use crate::core::judge::judge;
+    use crate::core::model::Record;
+
+    // 真实谜面两条记录(附录 A 金标准的前两条)
+    fn ab_records() -> Vec<Record> {
+        vec![
+            Record::new(vec![3, 1, 2, 0], 1, 0), // 橙蓝紫红
+            Record::new(vec![3, 1, 2, 5], 1, 0), // 橙蓝紫绿
+        ]
+    }
+
+    #[test]
+    fn filter_empty_records_is_full_space() {
+        let s = Settings::default();
+        assert_eq!(filter_candidates(&s, &[]).len(), 1296);
+    }
+
+    #[test]
+    fn filter_real_two_records_leaves_24() {
+        // 已由穷举脚本验证:橙蓝紫红(1,0) + 橙蓝紫绿(1,0) → 恰好 24 个候选
+        let s = Settings::default();
+        let cands = filter_candidates(&s, &ab_records());
+        assert_eq!(cands.len(), 24);
+        assert!(cands.iter().any(|c| c == &vec![2, 2, 2, 4])); // 紫紫紫黄
+        assert!(cands.iter().any(|c| c == &vec![1, 1, 1, 1]));
+        // 枚举序中第一个候选是 [1,1,1,1]
+        assert_eq!(cands[0], vec![1, 1, 1, 1]);
+    }
+
+    #[test]
+    fn filter_respects_all_enabled_records() {
+        let s = Settings::default();
+        let cands = filter_candidates(&s, &ab_records());
+        assert!(cands.iter().all(|c| {
+            judge(&[3, 1, 2, 0], c) == (1, 0) && judge(&[3, 1, 2, 5], c) == (1, 0)
+        }));
+    }
+
+    #[test]
+    fn disabled_record_ignored() {
+        let s = Settings::default();
+        let mut r = Record::new(vec![0, 1, 2, 3], 4, 0); // 声称红蓝紫橙即答案
+        r.enabled = false;
+        assert_eq!(filter_candidates(&s, &[r]).len(), 1296);
+    }
+
+    #[test]
+    fn filter_contradiction_is_empty() {
+        let s = Settings::default();
+        let mut rs = ab_records();
+        rs.push(Record::new(vec![0, 1, 2, 3], 4, 0)); // 与前两条矛盾
+        assert!(filter_candidates(&s, &rs).is_empty());
     }
 }
