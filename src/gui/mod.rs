@@ -4,6 +4,8 @@ use eframe::egui;
 
 use crate::{Record, Recommendation, Settings, SolveOutcome};
 
+use records_panel::RecordEditor;
+
 pub mod assistant_panel;
 pub mod palette;
 pub mod records_panel;
@@ -37,6 +39,7 @@ pub struct GemsleuthApp {
     pub solve_outcome: Option<SolveOutcome>, // 整卷求解快照(点击求解时更新)
     pub font_warning: bool,
     pub assets: Assets,
+    pub editor: RecordEditor,
 }
 
 impl GemsleuthApp {
@@ -51,6 +54,7 @@ impl GemsleuthApp {
             solve_outcome: None,
             font_warning,
             assets: Assets::load(&cc.egui_ctx),
+            editor: RecordEditor::default(),
         }
     }
 }
@@ -170,17 +174,17 @@ impl eframe::App for GemsleuthApp {
                 ui.selectable_value(&mut self.tab, Tab::Assistant, "陪玩助手");
             });
             ui.separator();
-            // Task 12-14 将替换以下占位为 records_panel / solve_panel / assistant_panel
-            ui.label(format!("记录数:{}", self.session.records.len()));
-            ui.horizontal(|ui| {
-                ui.label("素材冒烟:");
-                for i in 0..self.session.settings.colors as u8 {
-                    palette::small_gem(ui, &self.assets, i);
-                }
-                palette::icon_count(ui, &self.assets, true, 2);
-                palette::icon_count(ui, &self.assets, false, 1);
-                ui.image(egui::load::SizedTexture::new(self.assets.unknown.id(), [32.0, 32.0]));
-            });
+            records_panel::show(
+                ui,
+                &self.assets,
+                &mut self.session,
+                &mut self.editor,
+                &mut self.dirty,
+                &self.cached.suspects,
+            );
+            ui.separator();
+            // Task 13/14 接入结果区,暂以占位标签过渡
+            ui.label(format!("实时候选数:{}", self.cached.candidates.len()));
             confirm_dialog(ui, &mut self.pending_settings, &mut self.session, &mut self.dirty);
         });
     }
