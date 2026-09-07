@@ -3,6 +3,7 @@
 use crate::core::judge::judge;
 use crate::core::model::Record;
 use crate::core::model::Settings;
+use crate::core::strategy::{recommend_for, Recommendation};
 
 /// 枚举全部可能答案(§4.3 第 1 步)。
 /// repeats=true → colors^slots 个,里程表序(末位变化最快,即 itertools.product 序);
@@ -65,9 +66,50 @@ pub fn filter_candidates(settings: &Settings, records: &[Record]) -> Vec<Vec<u8>
         .collect()
 }
 
+/// 求解编排结果(§4.3,GUI 与最终用户依赖)。
+#[derive(Debug, Clone, PartialEq)]
+pub enum SolveOutcome {
+    /// 候选唯一:即最终答案。
+    Unique(Vec<u8>),
+    /// 多候选并存:附下一步推荐。
+    Ambiguous { candidates: Vec<Vec<u8>>, recommendation: Recommendation },
+    /// 候选为空:enabled 记录整体矛盾(用 suspect_records 排查)。
+    Contradiction,
+}
+
+/// 求解编排(§4.3 第 3 步):过滤出全部候选后按数量三分支。
+pub fn solve(settings: &Settings, records: &[Record]) -> SolveOutcome {
+    let candidates = filter_candidates(settings, records);
+    match candidates.len() {
+        0 => SolveOutcome::Contradiction,
+        1 => SolveOutcome::Unique(candidates.into_iter().next().unwrap()),
+        _ => SolveOutcome::Ambiguous {
+            recommendation: recommend_for(settings, &candidates),
+            candidates,
+        },
+    }
+}
+
+/// 矛盾排查(F5):当前整体矛盾时,返回"禁用后候选恢复非空"的记录下标;非矛盾返回空。
+pub fn suspect_records(settings: &Settings, records: &[Record]) -> Vec<usize> {
+    if !filter_candidates(settings, records).is_empty() {
+        return vec![]; // 整体不矛盾时无嫌疑可谈
+    }
+    (0..records.len())
+        .filter(|&i| {
+            records[i].enabled && {
+                let mut others = records.to_vec();
+                others[i].enabled = false;
+                !filter_candidates(settings, &others).is_empty()
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::strategy::{Bound, Recommendation};
 
     #[test]
     fn repeats_space_size() {
@@ -153,5 +195,108 @@ mod tests {
         let mut rs = ab_records();
         rs.push(Record::new(vec![0, 1, 2, 3], 4, 0)); // 与前两条矛盾
         assert!(filter_candidates(&s, &rs).is_empty());
+    }
+
+    // 金标准:6 条记录唯一解出 紫紫紫黄(附录 A;前 2 条为真实谜面,后 4 条构造补充)
+    fn golden_records() -> Vec<Record> {
+        vec![
+            Record::new(vec![3, 1, 2, 0], 1, 0), // 橙蓝紫红(真实)
+            Record::new(vec![3, 1, 2, 5], 1, 0), // 橙蓝紫绿(真实)
+            Record::new(vec![0, 1, 2, 3], 1, 0), // 红蓝紫橙
+            Record::new(vec![0, 0, 1, 1], 0, 0), // 红红蓝蓝
+            Record::new(vec![4, 5, 0, 1], 0, 1), // 黄绿红蓝
+            Record::new(vec![2, 4, 2, 2], 2, 2), // 紫黄紫紫
+        ]
+    }
+
+    fn contradiction_records() -> Vec<Record> {
+        let mut rs = golden_records();
+        rs.truncate(2);
+        rs.push(Record::new(vec![0, 1, 2, 3], 4, 0)); // 声称红蓝紫橙即答案,与前两条矛盾
+        rs
+    }
+
+    #[test]
+    fn golden_puzzle_solves_unique() {
+        let oc = solve(&Settings::default(), &golden_records());
+        assert_eq!(oc, SolveOutcome::Unique(vec![2, 2, 2, 4])); // 紫紫紫黄
+    }
+
+    #[test]
+    fn solve_is_deterministic() {
+        let s = Settings::default();
+        assert_eq!(solve(&s, &golden_records()), solve(&s, &golden_records()));
+    }
+
+    #[test]
+    fn solve_contradiction_and_suspects() {
+        let s = Settings::default();
+        let rs = contradiction_records();
+        assert_eq!(solve(&s, &rs), SolveOutcome::Contradiction);
+        assert_eq!(suspect_records(&s, &rs), vec![2]); // 第 3 条(4,0)是嫌疑
+        // 禁用嫌疑记录后恢复为 24 候选的 Ambiguous
+        let mut fixed = rs.clone();
+        fixed[2].enabled = false;
+        match solve(&s, &fixed) {
+            SolveOutcome::Ambiguous { candidates, .. } => assert_eq!(candidates.len(), 24),
+            other => panic!("应恢复为 Ambiguous,实际 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn solve_empty_records_ambiguous_with_entropy_recommendation() {
+        match solve(&Settings::default(), &[]) {
+            SolveOutcome::Ambiguous { candidates, recommendation } => {
+                assert_eq!(candidates.len(), 1296);
+                match recommendation {
+                    Recommendation::Guess {
+                        guess,
+                        bound: Bound::Expected { entropy_bits, worst_bucket },
+                    } => {
+                        assert_eq!(guess, vec![0, 1, 2, 3]);
+                        assert!((entropy_bits - 3.056_671).abs() < 1e-4);
+                        assert_eq!(worst_bucket, 312);
+                    }
+                    other => panic!("应熵推荐,实际 {other:?}"),
+                }
+            }
+            other => panic!("应 Ambiguous,实际 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn solve_two_candidates_ambiguous() {
+        let rs = vec![
+            Record::new(vec![3, 1, 2, 0], 1, 0),
+            Record::new(vec![3, 1, 2, 5], 1, 0),
+            Record::new(vec![0, 1, 2, 3], 1, 0),
+            Record::new(vec![0, 0, 1, 1], 0, 0),
+            Record::new(vec![2, 4, 2, 2], 2, 2),
+        ];
+        match solve(&Settings::default(), &rs) {
+            SolveOutcome::Ambiguous { candidates, recommendation } => {
+                assert_eq!(candidates, vec![vec![2, 2, 2, 4], vec![4, 2, 2, 2]]);
+                assert_eq!(
+                    recommendation,
+                    Recommendation::Guess { guess: vec![2, 2, 2, 4], bound: Bound::GuaranteedSteps(2) }
+                );
+            }
+            other => panic!("应 Ambiguous,实际 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn permutation_mode_smoke() {
+        // 规格 §6 排列模式冒烟:repeats=false 下求解正确性(性质断言)
+        // 注:不能选 (1,0) 这类反馈——6 色中猜测外仅剩 2 色,凑不出"只共享 1 色"的 4 互异候选,必然矛盾
+        let s = Settings { colors: 6, slots: 4, repeats: false };
+        let rs = [Record::new(vec![0, 1, 2, 3], 2, 2)];
+        let cands = filter_candidates(&s, &rs);
+        assert!(!cands.is_empty());
+        assert!(cands.iter().any(|c| c == &vec![1, 0, 2, 3])); // 换位前两个槽即满足 (2,2)
+        assert!(cands.iter().all(|c| {
+            c.iter().collect::<std::collections::HashSet<_>>().len() == 4  // 无重复
+                && judge(&[0, 1, 2, 3], c) == (2, 2)                       // 满足记录
+        }));
     }
 }
