@@ -102,6 +102,7 @@ pub fn recommend(settings: &Settings, records: &[Record]) -> Recommendation {
 /// 由已知候选集直接推荐(GUI 每帧缓存后调用;要求候选非空)。
 pub(crate) fn recommend_for(settings: &Settings, candidates: &[Vec<u8>]) -> Recommendation {
     match candidates.len() {
+        0 => panic!("recommend_for: 候选为空属于矛盾,调用方(solve/GUI)应先检查"),
         1 => Recommendation::Answer(candidates[0].clone()),
         2 => Recommendation::Guess {
             // 猜其中之一:命中即结束,未中则另一个即答案,必 ≤2 步(§4.4)
@@ -114,7 +115,7 @@ pub(crate) fn recommend_for(settings: &Settings, candidates: &[Vec<u8>]) -> Reco
                 Recommendation::Guess { guess, bound: Bound::GuaranteedSteps(steps) }
             } else {
                 // 深度上限内无法给出保证(理论下不会发生):回退熵推荐并如实标注为期望值
-                let (guess, h, worst) = entropy_best(candidates, &guesses);
+                let (guess, h, worst) = entropy_pick(settings, candidates);
                 Recommendation::Guess {
                     guess,
                     bound: Bound::Expected { entropy_bits: h, worst_bucket: worst },
@@ -122,13 +123,24 @@ pub(crate) fn recommend_for(settings: &Settings, candidates: &[Vec<u8>]) -> Reco
             }
         }
         _ => {
-            let guesses = guess_space(settings);
-            let (guess, h, worst) = entropy_best(candidates, &guesses);
+            let (guess, h, worst) = entropy_pick(settings, candidates);
             Recommendation::Guess {
                 guess,
                 bound: Bound::Expected { entropy_bits: h, worst_bucket: worst },
             }
         }
+    }
+}
+
+/// 熵层打分:极端配置下候选侧同样固定种子采样,保证同步计算秒级内(§4.4)。
+/// 仅用于打分;Bound::Expected 本就标注为期望参考而非保证。
+fn entropy_pick(settings: &Settings, candidates: &[Vec<u8>]) -> (Vec<u8>, f64, usize) {
+    let guesses = guess_space(settings);
+    if candidates.len() > FULL_SPACE_LIMIT {
+        let sampled = sample_guesses(candidates, SAMPLE_SIZE);
+        entropy_best(&sampled, &guesses)
+    } else {
+        entropy_best(candidates, &guesses)
     }
 }
 
@@ -420,5 +432,21 @@ mod tests {
             Record::new(vec![2, 4, 2, 2], 2, 2),
         ];
         assert_eq!(worst_case_steps(&s, &two), 2); // 与 GuaranteedSteps(2) 一致
+    }
+
+    #[test]
+    fn entropy_samples_candidate_side_on_huge_spaces() {
+        // 8⁵=32768 > FULL_SPACE_LIMIT:候选侧采样路径被触发;
+        // 结果仍须是合法猜测且确定(两调用一致),耗时秒级内
+        let s = Settings { colors: 8, slots: 5, repeats: true };
+        let rec = recommend(&s, &[]);
+        match rec {
+            Recommendation::Guess { ref guess, bound: Bound::Expected { .. } } => {
+                assert_eq!(guess.len(), 5);
+                assert!(guess.iter().all(|&g| (g as usize) < 8));
+            }
+            other => panic!("应熵推荐,实际 {other:?}"),
+        }
+        assert_eq!(recommend(&s, &[]), rec); // 固定种子 → 可复现
     }
 }

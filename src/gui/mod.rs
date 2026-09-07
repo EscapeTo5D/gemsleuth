@@ -149,6 +149,7 @@ fn confirm_dialog(
     session: &mut SessionState,
     editor: &mut RecordEditor,
     dirty: &mut bool,
+    solve_outcome: &mut Option<SolveOutcome>,
 ) {
     if pending.is_none() {
         return;
@@ -165,6 +166,7 @@ fn confirm_dialog(
                     session.settings = pending.take().unwrap();
                     session.records.clear();
                     editor.reset(); // 同步清空编辑器,防止悬空 editing 索引(规格 §5.1)
+                    *solve_outcome = None; // 记录全清,求解快照一并失效
                     *dirty = true;
                 }
                 if ui.button("取消").clicked() {
@@ -235,6 +237,7 @@ impl eframe::App for GemsleuthApp {
                 &mut self.session,
                 &mut self.editor,
                 &mut self.dirty,
+                &mut self.solve_outcome,
             );
         });
     }
