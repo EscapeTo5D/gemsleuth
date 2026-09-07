@@ -2,7 +2,7 @@
 
 use eframe::egui;
 
-use crate::{Record, Recommendation, Settings, SolveOutcome};
+use crate::{Bound, Record, Recommendation, Settings, SolveOutcome};
 
 use records_panel::RecordEditor;
 
@@ -57,6 +57,35 @@ impl GemsleuthApp {
             editor: RecordEditor::default(),
         }
     }
+}
+
+/// 推荐猜测展示行(两结果面板共用,§5.1)。
+pub fn recommendation_row(ui: &mut egui::Ui, assets: &Assets, rec: &Recommendation) {
+    ui.horizontal(|ui| {
+        ui.label("推荐下一猜:");
+        match rec {
+            Recommendation::Answer(ans) => {
+                for &g in ans {
+                    palette::big_gem(ui, assets, g);
+                }
+            }
+            Recommendation::Guess { guess, bound } => {
+                for &g in guess {
+                    palette::big_gem(ui, assets, g);
+                }
+                match bound {
+                    Bound::GuaranteedSteps(n) => {
+                        ui.label(format!("(精确前瞻:最多还需 {n} 步)"));
+                    }
+                    Bound::Expected { entropy_bits, worst_bucket } => {
+                        ui.label(format!(
+                            "(熵推荐:期望信息量 {entropy_bits:.2} 比特,最坏情况剩 {worst_bucket} 个)"
+                        ));
+                    }
+                }
+            }
+        }
+    });
 }
 
 /// 运行时探测系统中文字体(不分发字体文件,规避许可,§5.3)。
@@ -190,8 +219,18 @@ impl eframe::App for GemsleuthApp {
                 &self.cached.suspects,
             );
             ui.separator();
-            // Task 13/14 接入结果区,暂以占位标签过渡
-            ui.label(format!("实时候选数:{}", self.cached.candidates.len()));
+            match self.tab {
+                Tab::Solve => solve_panel::show(
+                    ui,
+                    &self.assets,
+                    &self.session,
+                    &mut self.solve_outcome,
+                    &self.cached.suspects,
+                ),
+                Tab::Assistant => {
+                    ui.label("陪玩助手面板在 Task 14 接入");
+                }
+            }
             confirm_dialog(
                 ui,
                 &mut self.pending_settings,
