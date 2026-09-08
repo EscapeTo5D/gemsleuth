@@ -50,7 +50,6 @@ pub struct CachedAnalysis {
 pub struct GemsleuthApp {
     pub session: SessionState,
     pub tab: Tab,
-    pub pending_settings: Option<Settings>, // 待确认的新设置(确认弹窗)
     pub dirty: bool,                        // 任一会话变更 → 重算
     pub cached: CachedAnalysis,
     pub solve_outcome: Option<SolveOutcome>, // 整卷求解快照(点击求解时更新)
@@ -66,7 +65,6 @@ impl GemsleuthApp {
         Self {
             session: SessionState::default(),
             tab: Tab::Assistant,
-            pending_settings: None,
             dirty: true,
             cached: CachedAnalysis::default(),
             solve_outcome: None,
@@ -210,65 +208,6 @@ fn paint_background(ui: &mut egui::Ui, assets: &Assets) {
     painter.rect_filled(screen, 0.0, egui::Color32::from_black_alpha(90));
 }
 
-fn settings_bar(ui: &mut egui::Ui, session: &mut SessionState, pending: &mut Option<Settings>) {
-    ui.horizontal(|ui| {
-        ui.strong("设置:");
-        let mut next = session.settings;
-        // 颜色数固定为 6(palette::COLORS),槽位数固定为 4(SLOTS),仅保留重复开关
-        ui.checkbox(&mut next.repeats, "允许重复");
-        if next != session.settings {
-            *pending = Some(next); // 任何设置变化都弹确认(确认后清空记录,§4.5)
-        }
-        // 重置会话靠右
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            if ui.button("重置会话").clicked() {
-                *pending = Some(session.settings); // 设置不变,确认后仅清空记录
-            }
-        });
-    });
-}
-
-fn confirm_dialog(
-    ui: &mut egui::Ui,
-    pending: &mut Option<Settings>,
-    session: &mut SessionState,
-    editor: &mut RecordEditor,
-    dirty: &mut bool,
-    solve_outcome: &mut Option<SolveOutcome>,
-) {
-    if pending.is_none() {
-        return;
-    }
-    // pending 与当前设置相同 ⇒ 来自「重置会话」,文案只说清空记录
-    let reset_only = pending.as_ref() == Some(&session.settings);
-    let (title, body) = if reset_only {
-        ("重置会话", "确定要清空当前全部记录吗?")
-    } else {
-        ("确认修改设置", "修改重复设置将清空当前全部记录,确定吗?")
-    };
-    let ctx = ui.ctx().clone();
-    egui::Window::new(title)
-        .collapsible(false)
-        .resizable(false)
-        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-        .show(&ctx, |ui| {
-            ui.label(body);
-            ui.horizontal(|ui| {
-                if primary_button(ui, "确定", egui::vec2(84.0, 30.0)).clicked() {
-                    session.settings = pending.take().unwrap();
-                    session.records.clear();
-                    session.answer.clear();
-                    editor.reset(); // 同步清空编辑器,防止悬空 editing 索引(规格 §5.1)
-                    *solve_outcome = None; // 记录全清,求解快照一并失效
-                    *dirty = true;
-                }
-                if ui.button("取消").clicked() {
-                    *pending = None;
-                }
-            });
-        });
-}
-
 impl eframe::App for GemsleuthApp {
     /// 每帧 UI 前调用,禁止画 UI——正好承载脏标记重算(§5.1 实时刷新且不卡帧)。
     fn logic(&mut self, _ctx: &egui::Context, _frame: &mut eframe::Frame) {
@@ -301,11 +240,6 @@ impl eframe::App for GemsleuthApp {
             if self.font_warning {
                 ui.colored_label(egui::Color32::YELLOW, "警告:未找到系统中文字体,中文可能无法显示");
             }
-            egui::Panel::top(egui::Id::new("settings"))
-                .frame(egui::Frame::NONE)
-                .show(ui, |ui| {
-                    settings_bar(ui, &mut self.session, &mut self.pending_settings);
-                });
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 if tab_button(ui, self.tab == Tab::Assistant, "陪玩助手") {
@@ -344,14 +278,6 @@ impl eframe::App for GemsleuthApp {
                     &self.cached.suspects,
                 ),
             }
-            confirm_dialog(
-                ui,
-                &mut self.pending_settings,
-                &mut self.session,
-                &mut self.editor,
-                &mut self.dirty,
-                &mut self.solve_outcome,
-            );
         });
     }
 }
