@@ -199,7 +199,7 @@ fn paint_background(ui: &mut egui::Ui, assets: &Assets) {
     let painter =
         ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Background, egui::Id::new("bg")));
     painter.image(assets.bg.id(), dst, uv, egui::Color32::WHITE);
-    painter.rect_filled(screen, 0.0, egui::Color32::from_black_alpha(150));
+    painter.rect_filled(screen, 0.0, egui::Color32::from_black_alpha(90));
 }
 
 fn settings_bar(ui: &mut egui::Ui, session: &mut SessionState, pending: &mut Option<Settings>) {
