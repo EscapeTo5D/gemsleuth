@@ -37,13 +37,14 @@ pub fn gem_button_big(ui: &mut egui::Ui, assets: &Assets, idx: u8) -> egui::Resp
     image_tile_pad(ui, sized, 3.0).on_hover_text(name(idx))
 }
 
-/// 编辑区大号空槽位:空白深色磁贴(深色底/圆角/描边/悬停),54×54,不显示图标。
+/// 编辑区大号空槽位:空白深色磁贴(深色底/圆角/描边/悬停),不显示图标。
+/// min_size 为含边距的外框尺寸,须为 54×54 才能与大号宝石磁贴(48 图+6 边距)完全同形。
 pub fn empty_slot_button_big(ui: &mut egui::Ui) -> egui::Response {
     ui.scope(|ui| {
         ui.spacing_mut().button_padding = egui::vec2(3.0, 3.0);
         ui.add(
             egui::Button::new(egui::RichText::new(" ").size(10.0))
-                .min_size(egui::vec2(48.0, 48.0)),
+                .min_size(egui::vec2(54.0, 54.0)),
         )
     })
     .inner
