@@ -3,12 +3,17 @@
 
 use eframe::egui;
 
-use crate::gui::{palette, recommendation_row, suspects_row, Assets, CachedAnalysis, MAX_ROUNDS, SessionState};
+use crate::gui::{
+    palette, recommendation_row, suspects_row, Assets, CachedAnalysis, MAX_ROUNDS, SessionState,
+};
+use crate::gui::records_panel::RecordEditor;
 
 pub fn show(
     ui: &mut egui::Ui,
     assets: &Assets,
-    session: &SessionState,
+    session: &mut SessionState,
+    editor: &mut RecordEditor,
+    dirty: &mut bool,
     cached: &CachedAnalysis,
 ) {
     ui.heading("陪玩助手");
@@ -24,6 +29,17 @@ pub fn show(
                     palette::big_gem(ui, assets, g);
                 }
             });
+            // 一局终了:一键清空记录开新局
+            if ui
+                .button("清除记录")
+                .on_hover_text("清空全部记录,开始新的一局")
+                .clicked()
+            {
+                session.records.clear();
+                session.answer.clear();
+                editor.reset();
+                *dirty = true;
+            }
         }
         n => {
             ui.strong(format!("剩余候选 {n} 个"));

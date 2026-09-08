@@ -323,7 +323,14 @@ impl eframe::App for GemsleuthApp {
             ui.separator();
             match self.tab {
                 Tab::Assistant => {
-                    assistant_panel::show(ui, &self.assets, &self.session, &self.cached)
+                    assistant_panel::show(
+                        ui,
+                        &self.assets,
+                        &mut self.session,
+                        &mut self.editor,
+                        &mut self.dirty,
+                        &self.cached,
+                    )
                 }
                 Tab::Solve => solve_panel::show(
                     ui,
