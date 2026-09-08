@@ -17,6 +17,11 @@ pub fn small_gem(ui: &mut egui::Ui, assets: &Assets, idx: u8) {
     ui.image(egui::load::SizedTexture::new(assets.gem(idx).id(), [32.0, 32.0]));
 }
 
+/// 任意尺寸宝石图(候选栏按可用宽度放大用)。
+pub fn gem_sized(ui: &mut egui::Ui, assets: &Assets, idx: u8, size: f32) {
+    ui.image(egui::load::SizedTexture::new(assets.gem(idx).id(), [size, size]));
+}
+
 pub fn big_gem(ui: &mut egui::Ui, assets: &Assets, idx: u8) {
     ui.image(egui::load::SizedTexture::new(assets.gem(idx).id(), [64.0, 64.0]));
 }
@@ -114,43 +119,63 @@ pub fn mark_clickable(marks: &[u8], i: usize) -> bool {
     i == 0 || marks[i - 1] != MARK_UNKNOWN
 }
 
-/// 可点反馈标:点击循环 问号→蓝标→金标→问号;须按序点亮——前一标还是问号时,
-/// 此标置灰不可点;排列恒为 蓝标在前、金标随后、问号补足。
+/// 点击第 i 个标后的新值:前一标已是金标时,问号位直接点亮为金标(不带出蓝标);
+/// 其余按 问号→蓝标→金标→问号 循环。
+fn next_mark_on_click(marks: &[u8], i: usize) -> u8 {
+    match marks[i] {
+        MARK_UNKNOWN if i > 0 && marks[i - 1] == MARK_PARTIAL => MARK_PARTIAL,
+        m => (m + 1) % 3,
+    }
+}
+
+/// 可点反馈标:须按序点亮——前一标还是问号时,此标置灰不可点;
+/// 蓝标段内依次点亮蓝标,进入金标段后直接点亮金标,已点亮标循环 蓝→金→问号;
+/// 排列恒为 蓝标在前、金标随后、问号补足。
 /// 尺寸对齐:2×(20 图+4 边距) + 行距 6 = 54,与 54×54 宝石磁贴上下底齐平。
 pub fn mark_cycle_buttons(ui: &mut egui::Ui, assets: &Assets, marks: &mut [u8]) {
     normalize_marks(marks);
     let clickable: Vec<bool> = (0..marks.len()).map(|i| mark_clickable(marks, i)).collect();
+    let next: Vec<u8> = (0..marks.len()).map(|i| next_mark_on_click(marks, i)).collect();
     // vertical 强制两行堆叠:横向布局里嵌套 horizontal 会水平并排成 1 行
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing = egui::vec2(4.0, 6.0);
         for (row, chunk) in marks.chunks_mut(2).enumerate() {
             ui.horizontal(|ui| {
                 for (col, m) in chunk.iter_mut().enumerate() {
-                    let allowed = clickable[row * 2 + col];
+                    let i = row * 2 + col;
                     let sized =
                         egui::load::SizedTexture::new(mark_tex(assets, *m).id(), [20.0, 20.0]);
                     let resp = ui.scope(|ui| {
                         ui.spacing_mut().button_padding = egui::vec2(2.0, 2.0);
                         ui.add_enabled(
-                            allowed,
+                            clickable[i],
                             egui::Button::image(sized)
                                 .corner_radius(egui::CornerRadius::same(12)),
                         )
                     })
                     .inner;
-                    let tip = if allowed {
-                        format!("{}(点击切换)", mark_tip(*m))
+                    let tip = if clickable[i] {
+                        match (*m, next[i]) {
+                            (MARK_UNKNOWN, MARK_EXACT) => "问号:点击点亮为蓝标".to_string(),
+                            (MARK_UNKNOWN, MARK_PARTIAL) => {
+                                "问号:前一位是金标,点击直接点亮为金标".to_string()
+                            }
+                            (MARK_EXACT, _) => {
+                                "蓝标:宝石种类和位置都对(点击切换为金标)".to_string()
+                            }
+                            _ => "金标:种类对但位置错(点击清除此标)".to_string(),
+                        }
                     } else {
                         "须按顺序点亮:先点击前面的反馈标".to_string()
                     };
                     if resp.on_hover_text(tip).clicked() {
-                        *m = (*m + 1) % 3;
+                        *m = next[i];
                     }
                 }
             });
         }
     });
-    // 切换可能把前位蓝标改成金标,重排保持蓝标恒在前
+    // 兜底重排,保持蓝标恒在前
     normalize_marks(marks);
 }
 
@@ -160,7 +185,7 @@ mod tests {
 
     fn click(marks: &mut [u8], i: usize) {
         assert!(mark_clickable(marks, i), "第 {i} 个标须先点亮前一个才能点");
-        marks[i] = (marks[i] + 1) % 3;
+        marks[i] = next_mark_on_click(marks, i);
         normalize_marks(marks);
     }
 
@@ -172,20 +197,26 @@ mod tests {
     }
 
     #[test]
-    fn 点击_按序点亮且排列恒规范() {
+    fn 点击_按序点亮且金标后不带蓝标() {
         let mut m = vec![MARK_UNKNOWN; 4];
         assert!(!mark_clickable(&m, 1) && !mark_clickable(&m, 3));
         click(&mut m, 0); // 问号→蓝标
-        assert_eq!(m, vec![MARK_EXACT, MARK_UNKNOWN, MARK_UNKNOWN, MARK_UNKNOWN]);
-        click(&mut m, 0); // 蓝标→金标
-        click(&mut m, 1); // 金标后点亮的新标会被重排到金标前
+        click(&mut m, 1); // 前一是蓝标,点亮为蓝标
+        click(&mut m, 2); // → (3,0)
+        assert_eq!(m, vec![MARK_EXACT, MARK_EXACT, MARK_EXACT, MARK_UNKNOWN]);
+        click(&mut m, 0); // 蓝标→金标,归一化后仍在蓝标段尾 → (2,1)
+        assert_eq!(m, vec![MARK_EXACT, MARK_EXACT, MARK_PARTIAL, MARK_UNKNOWN]);
+        click(&mut m, 3); // 前一是金标,直接点亮金标,不带出蓝标 → (2,2)
+        assert_eq!(m, vec![MARK_EXACT, MARK_EXACT, MARK_PARTIAL, MARK_PARTIAL]);
+        click(&mut m, 3); // 金标→问号,逐个回落
+        click(&mut m, 2);
+        assert_eq!(m, vec![MARK_EXACT, MARK_EXACT, MARK_UNKNOWN, MARK_UNKNOWN]);
+        click(&mut m, 0); // → (1,1)
         assert_eq!(m, vec![MARK_EXACT, MARK_PARTIAL, MARK_UNKNOWN, MARK_UNKNOWN]);
-        click(&mut m, 0); // 蓝标→金标 → (0,2):纯金标可达
-        assert_eq!(m, vec![MARK_PARTIAL, MARK_PARTIAL, MARK_UNKNOWN, MARK_UNKNOWN]);
-        click(&mut m, 2); // → (1,2)
-        click(&mut m, 0); // → (0,3)
+        click(&mut m, 0); // → (0,2)
+        click(&mut m, 2); // 直接点亮金标 → (0,3):纯金标可达
         assert_eq!(m, vec![MARK_PARTIAL, MARK_PARTIAL, MARK_PARTIAL, MARK_UNKNOWN]);
-        click(&mut m, 2); // 金标→问号,逐个回落
+        click(&mut m, 2);
         click(&mut m, 1);
         click(&mut m, 0);
         assert_eq!(m, vec![MARK_UNKNOWN; 4]);
