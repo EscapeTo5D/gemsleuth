@@ -6,6 +6,9 @@ use crate::gui::assets::Assets;
 
 pub const NAMES: [&str; 8] = ["红", "蓝", "紫", "橙", "黄", "绿", "青", "白"];
 
+/// 颜色数固定为 4(红/蓝/紫/橙)。核心引擎仍支持 4..=8,仅 GUI 固定。
+pub const COLORS: usize = 4;
+
 pub fn name(idx: u8) -> &'static str {
     NAMES[idx as usize]
 }

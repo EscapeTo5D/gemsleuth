@@ -14,14 +14,23 @@ pub mod assets;
 
 pub use assets::Assets;
 
-#[derive(Default)]
+#[derive(Clone, Copy, PartialEq)]
+pub enum Tab { Solve, Assistant }
+
+/// 会话默认:颜色数固定为 4(palette::COLORS)。
 pub struct SessionState {
     pub settings: Settings,
     pub records: Vec<Record>,
 }
 
-#[derive(Clone, Copy, PartialEq)]
-pub enum Tab { Solve, Assistant }
+impl Default for SessionState {
+    fn default() -> Self {
+        Self {
+            settings: Settings { colors: palette::COLORS, ..Default::default() },
+            records: Vec::new(),
+        }
+    }
+}
 
 #[derive(Default)]
 pub struct CachedAnalysis {
@@ -45,6 +54,7 @@ pub struct GemsleuthApp {
 impl GemsleuthApp {
     pub fn new(cc: &eframe::CreationContext) -> Self {
         let font_warning = !install_cjk_fonts(&cc.egui_ctx);
+        customize_visuals(&cc.egui_ctx);
         Self {
             session: SessionState::default(),
             tab: Tab::Solve,
@@ -59,10 +69,63 @@ impl GemsleuthApp {
     }
 }
 
+/// 主题强调色(琥珀金):主按钮/选中 Tab/链接。
+pub const ACCENT: egui::Color32 = egui::Color32::from_rgb(235, 172, 58);
+
+/// 主操作按钮(琥珀底黑字,视觉上高于普通按钮)。
+pub fn primary_button(ui: &mut egui::Ui, label: &str, min_size: egui::Vec2) -> egui::Response {
+    ui.add(
+        egui::Button::new(egui::RichText::new(label).strong().color(egui::Color32::BLACK))
+            .fill(ACCENT)
+            .min_size(min_size),
+    )
+}
+
+/// 段式 Tab 按钮:选中琥珀底黑字,未选中暗底前景色。
+fn tab_button(ui: &mut egui::Ui, selected: bool, label: &str) -> bool {
+    let (fill, text) = if selected {
+        (ACCENT, egui::Color32::BLACK)
+    } else {
+        (
+            egui::Color32::from_gray(40),
+            ui.style().visuals.widgets.noninteractive.fg_stroke.color,
+        )
+    };
+    ui.add(
+        egui::Button::new(egui::RichText::new(label).strong().size(15.0).color(text))
+            .fill(fill)
+            .min_size(egui::vec2(128.0, 32.0)),
+    )
+    .clicked()
+}
+
+/// 全局主题:深色底 + 琥珀点缀 + 圆角,突出彩色宝石图标。
+fn customize_visuals(ctx: &egui::Context) {
+    ctx.set_theme(egui::ThemePreference::Dark);
+    ctx.style_mut_of(egui::Theme::Dark, |style| {
+        style.visuals = egui::Visuals::dark();
+        let v = &mut style.visuals;
+        v.window_corner_radius = egui::CornerRadius::same(8);
+        for w in [&mut v.widgets.inactive, &mut v.widgets.hovered, &mut v.widgets.active] {
+            w.corner_radius = egui::CornerRadius::same(6);
+        }
+        v.widgets.inactive.weak_bg_fill = egui::Color32::from_gray(40);
+        v.widgets.hovered.weak_bg_fill = egui::Color32::from_gray(56);
+        v.widgets.active.weak_bg_fill = egui::Color32::from_gray(64);
+        v.widgets.inactive.bg_stroke = egui::Stroke::new(1.0, egui::Color32::from_gray(78));
+        v.widgets.hovered.bg_stroke = egui::Stroke::new(1.0, egui::Color32::from_gray(105));
+        v.selection.bg_fill = egui::Color32::from_rgb(122, 88, 28); // 深琥珀,保证白字可读
+        v.selection.stroke = egui::Stroke::new(1.0, ACCENT);
+        v.hyperlink_color = ACCENT;
+        style.spacing.item_spacing = egui::vec2(8.0, 6.0);
+        style.spacing.button_padding = egui::vec2(10.0, 5.0);
+    });
+}
+
 /// 推荐猜测展示行(两结果面板共用,§5.1)。
 pub fn recommendation_row(ui: &mut egui::Ui, assets: &Assets, rec: &Recommendation) {
     ui.horizontal(|ui| {
-        ui.label("推荐下一猜:");
+        ui.strong("推荐下一猜:");
         match rec {
             Recommendation::Answer(ans) => {
                 for &g in ans {
@@ -75,17 +138,25 @@ pub fn recommendation_row(ui: &mut egui::Ui, assets: &Assets, rec: &Recommendati
                 }
                 match bound {
                     Bound::GuaranteedSteps(n) => {
-                        ui.label(format!("(精确前瞻:最多还需 {n} 步)"));
+                        ui.label(egui::RichText::new(format!("(精确前瞻:最多还需 {n} 步)")).weak());
                     }
                     Bound::Expected { entropy_bits, worst_bucket } => {
-                        ui.label(format!(
+                        ui.label(egui::RichText::new(format!(
                             "(熵推荐:期望信息量 {entropy_bits:.2} 比特,最坏情况剩 {worst_bucket} 个)"
-                        ));
+                        )).weak());
                     }
                 }
             }
         }
     });
+}
+
+/// 矛盾时的嫌疑记录提示行(两结果面板共用)。
+pub fn suspects_row(ui: &mut egui::Ui, suspects: &[usize]) {
+    if !suspects.is_empty() {
+        let list = suspects.iter().map(|i| (i + 1).to_string()).collect::<Vec<_>>().join("、");
+        ui.label(format!("嫌疑记录:第 {list} 条(禁用后候选恢复非空)"));
+    }
 }
 
 /// 运行时探测系统中文字体(不分发字体文件,规避许可,§5.3)。
@@ -113,15 +184,9 @@ fn install_cjk_fonts(ctx: &egui::Context) -> bool {
 
 fn settings_bar(ui: &mut egui::Ui, session: &mut SessionState, pending: &mut Option<Settings>) {
     ui.horizontal(|ui| {
-        ui.label("设置:");
+        ui.strong("设置:");
         let mut next = session.settings;
-        egui::ComboBox::from_label("颜色数")
-            .selected_text(format!("{}", session.settings.colors))
-            .show_ui(ui, |ui| {
-                for c in 4..=8 {
-                    ui.selectable_value(&mut next.colors, c, format!("{c}"));
-                }
-            });
+        // 颜色数固定为 4(palette::COLORS),不再提供颜色数选项
         // 不允许重复时,槽位数选项收窄到 ≤ 颜色数(§4.5 禁止非法组合)
         egui::ComboBox::from_label("槽位数")
             .selected_text(format!("{}", session.settings.slots))
@@ -137,9 +202,12 @@ fn settings_bar(ui: &mut egui::Ui, session: &mut SessionState, pending: &mut Opt
         } else if next != session.settings {
             *pending = Some(next); // 任何设置变化都弹确认(确认后清空记录,§4.5)
         }
-        if ui.button("重置会话").clicked() {
-            *pending = Some(session.settings); // 设置不变,确认后仅清空记录
-        }
+        // 重置会话靠右
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.button("重置会话").clicked() {
+                *pending = Some(session.settings); // 设置不变,确认后仅清空记录
+            }
+        });
     });
 }
 
@@ -154,15 +222,22 @@ fn confirm_dialog(
     if pending.is_none() {
         return;
     }
+    // pending 与当前设置相同 ⇒ 来自「重置会话」,文案只说清空记录
+    let reset_only = pending.as_ref() == Some(&session.settings);
+    let (title, body) = if reset_only {
+        ("重置会话", "确定要清空当前全部记录吗?")
+    } else {
+        ("确认修改设置", "修改槽位数或重复设置将清空当前全部记录,确定吗?")
+    };
     let ctx = ui.ctx().clone();
-    egui::Window::new("确认修改设置")
+    egui::Window::new(title)
         .collapsible(false)
         .resizable(false)
         .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
         .show(&ctx, |ui| {
-            ui.label("修改设置将清空当前全部记录,确定吗?");
+            ui.label(body);
             ui.horizontal(|ui| {
-                if ui.button("确定").clicked() {
+                if primary_button(ui, "确定", egui::vec2(84.0, 30.0)).clicked() {
                     session.settings = pending.take().unwrap();
                     session.records.clear();
                     editor.reset(); // 同步清空编辑器,防止悬空 editing 索引(规格 §5.1)
@@ -199,19 +274,24 @@ impl eframe::App for GemsleuthApp {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        egui::CentralPanel::default().show(ui, |ui| {
+        let frame = egui::Frame::central_panel(ui.style()).inner_margin(egui::Margin::same(12));
+        egui::CentralPanel::default().frame(frame).show(ui, |ui| {
             if self.font_warning {
                 ui.colored_label(egui::Color32::YELLOW, "警告:未找到系统中文字体,中文可能无法显示");
             }
             egui::Panel::top(egui::Id::new("settings")).show(ui, |ui| {
                 settings_bar(ui, &mut self.session, &mut self.pending_settings);
             });
-            ui.add_space(4.0);
+            ui.add_space(6.0);
             ui.horizontal(|ui| {
-                ui.selectable_value(&mut self.tab, Tab::Solve, "整卷求解");
-                ui.selectable_value(&mut self.tab, Tab::Assistant, "陪玩助手");
+                if tab_button(ui, self.tab == Tab::Solve, "整卷求解") {
+                    self.tab = Tab::Solve;
+                }
+                if tab_button(ui, self.tab == Tab::Assistant, "陪玩助手") {
+                    self.tab = Tab::Assistant;
+                }
             });
-            ui.separator();
+            ui.add_space(4.0);
             records_panel::show(
                 ui,
                 &self.assets,

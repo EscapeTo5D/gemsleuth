@@ -3,7 +3,7 @@
 use eframe::egui;
 
 use crate::SolveOutcome;
-use crate::gui::{palette, recommendation_row, Assets, SessionState};
+use crate::gui::{palette, primary_button, recommendation_row, suspects_row, Assets, SessionState};
 
 pub fn show(
     ui: &mut egui::Ui,
@@ -13,16 +13,16 @@ pub fn show(
     suspects: &[usize],
 ) {
     ui.heading("整卷求解");
-    if ui.button("求解").clicked() {
+    if primary_button(ui, "求解", egui::vec2(110.0, 34.0)).clicked() {
         *outcome = Some(crate::solve(&session.settings, &session.records));
     }
     let Some(oc) = outcome.as_ref() else {
-        ui.label("录入全部记录后点击「求解」");
+        ui.label(egui::RichText::new("录入全部记录后点击「求解」").weak());
         return;
     };
     match oc {
         SolveOutcome::Unique(ans) => {
-            ui.label("唯一答案:");
+            ui.strong("唯一答案:");
             ui.horizontal(|ui| {
                 for &g in ans {
                     palette::big_gem(ui, assets, g);
@@ -31,18 +31,15 @@ pub fn show(
         }
         SolveOutcome::Contradiction => {
             ui.colored_label(egui::Color32::RED, "记录矛盾!请检查录入,可逐条禁用定位。");
-            if !suspects.is_empty() {
-                let list =
-                    suspects.iter().map(|i| (i + 1).to_string()).collect::<Vec<_>>().join("、");
-                ui.label(format!("嫌疑记录:第 {list} 条(禁用后候选恢复非空)"));
-            }
+            suspects_row(ui, suspects);
         }
         SolveOutcome::Ambiguous { candidates, recommendation } => {
-            ui.label(format!("共 {} 个候选:", candidates.len()));
+            ui.strong(format!("共 {} 个候选:", candidates.len()));
             if candidates.len() > 50 {
-                ui.label("(超过 50 个,折叠为计数;继续录入记录或按推荐消歧)");
+                ui.label(egui::RichText::new("(超过 50 个,折叠为计数;继续录入记录或按推荐消歧)").weak());
             } else {
                 egui::ScrollArea::vertical()
+                    .id_salt("solve_candidates")
                     .max_height(220.0)
                     .show(ui, |ui| {
                         for c in candidates {
