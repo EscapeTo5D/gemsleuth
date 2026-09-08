@@ -15,7 +15,7 @@ pub mod assets;
 pub use assets::Assets;
 
 #[derive(Clone, Copy, PartialEq)]
-pub enum Tab { Solve, Assistant }
+pub enum Tab { Assistant, Solve }
 
 /// 游戏规则:最多 6 轮猜测,之后必须提交最终答案。
 pub const MAX_ROUNDS: usize = 6;
@@ -65,7 +65,7 @@ impl GemsleuthApp {
         customize_visuals(&cc.egui_ctx);
         Self {
             session: SessionState::default(),
-            tab: Tab::Solve,
+            tab: Tab::Assistant,
             pending_settings: None,
             dirty: true,
             cached: CachedAnalysis::default(),
@@ -304,11 +304,11 @@ impl eframe::App for GemsleuthApp {
                 });
             ui.add_space(6.0);
             ui.horizontal(|ui| {
-                if tab_button(ui, self.tab == Tab::Solve, "整卷求解") {
-                    self.tab = Tab::Solve;
-                }
                 if tab_button(ui, self.tab == Tab::Assistant, "陪玩助手") {
                     self.tab = Tab::Assistant;
+                }
+                if tab_button(ui, self.tab == Tab::Solve, "整卷求解") {
+                    self.tab = Tab::Solve;
                 }
             });
             ui.add_space(4.0);
@@ -322,6 +322,9 @@ impl eframe::App for GemsleuthApp {
             );
             ui.separator();
             match self.tab {
+                Tab::Assistant => {
+                    assistant_panel::show(ui, &self.assets, &self.session, &self.cached)
+                }
                 Tab::Solve => solve_panel::show(
                     ui,
                     &self.assets,
@@ -329,9 +332,6 @@ impl eframe::App for GemsleuthApp {
                     &mut self.solve_outcome,
                     &self.cached.suspects,
                 ),
-                Tab::Assistant => {
-                    assistant_panel::show(ui, &self.assets, &self.session, &self.cached)
-                }
             }
             confirm_dialog(
                 ui,
