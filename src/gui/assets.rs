@@ -4,15 +4,13 @@ use eframe::egui;
 
 pub mod asset_bytes {
     /// 同名替换文件后重新编译即生效,无需改代码。
-    pub const GEMS: [&[u8]; 8] = [
+    pub const GEMS: [&[u8]; 6] = [
         include_bytes!("../../assets/gems/gem_0.png"),
         include_bytes!("../../assets/gems/gem_1.png"),
         include_bytes!("../../assets/gems/gem_2.png"),
         include_bytes!("../../assets/gems/gem_3.png"),
         include_bytes!("../../assets/gems/gem_4.png"),
         include_bytes!("../../assets/gems/gem_5.png"),
-        include_bytes!("../../assets/gems/gem_6.png"),
-        include_bytes!("../../assets/gems/gem_7.png"),
     ];
     pub const EXACT: &[u8] = include_bytes!("../../assets/icons/exact.png");
     pub const PARTIAL: &[u8] = include_bytes!("../../assets/icons/partial.png");
@@ -42,7 +40,7 @@ fn tex(ctx: &egui::Context, name: &str, bytes: &[u8]) -> egui::TextureHandle {
 
 impl Assets {
     pub fn load(ctx: &egui::Context) -> Self {
-        let mut gems = Vec::with_capacity(8);
+        let mut gems = Vec::with_capacity(6);
         for (i, b) in asset_bytes::GEMS.iter().enumerate() {
             gems.push(tex(ctx, &format!("gem_{i}"), b));
         }

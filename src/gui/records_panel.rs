@@ -113,7 +113,7 @@ pub fn show(
                     editor.slots.truncate(slot);
                 }
             } else {
-                ui.image(egui::load::SizedTexture::new(assets.unknown.id(), [32.0, 32.0]));
+                palette::empty_slot_button(ui, assets);
             }
         }
     });
@@ -128,21 +128,24 @@ pub fn show(
             }
         }
     });
-    // 计数:图标 + 数值,完整语义放悬浮提示
+    // 计数:定义内联展示,一眼分清两个概念;悬浮补充重复计数的细节
     ui.horizontal(|ui| {
         ui.image(egui::load::SizedTexture::new(assets.exact.id(), [20.0, 20.0]));
         ui.strong("蓝标");
         ui.add(
             egui::DragValue::new(&mut editor.exact).range(0..=session.settings.slots as u8),
         )
-        .on_hover_text("位置和种类都对的数量");
-        ui.add_space(12.0);
+        .on_hover_text("宝石种类和位置都对的数量;如答案第 1 位是红、你猜的也是红 → 蓝标 +1");
+        ui.label(egui::RichText::new("= 位置和颜色都对").weak());
+    });
+    ui.horizontal(|ui| {
         ui.image(egui::load::SizedTexture::new(assets.partial.id(), [20.0, 20.0]));
         ui.strong("金标");
         ui.add(
             egui::DragValue::new(&mut editor.partial).range(0..=session.settings.slots as u8),
         )
-        .on_hover_text("种类对但位置错的数量");
+        .on_hover_text("宝石种类对但位置错的数量;同一颜色重复出现时,按两边较少的一侧计数");
+        ui.label(egui::RichText::new("= 颜色对、位置错").weak());
     });
 
     let candidate = Record {
@@ -210,7 +213,7 @@ fn answer_editor(
                     session.answer.truncate(slot);
                 }
             } else {
-                ui.image(egui::load::SizedTexture::new(assets.unknown.id(), [32.0, 32.0]));
+                palette::empty_slot_button(ui, assets);
             }
         }
     });
