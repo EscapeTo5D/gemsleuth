@@ -187,8 +187,10 @@ fn install_cjk_fonts(ctx: &egui::Context) -> bool {
     false
 }
 
-/// 背景图:画在 Background 层铺满整个窗口(cover:保持宽高比、居中、超出裁剪),
-/// 再压一层半透明黑保证前景可读。CentralPanel 填充须透明,否则会盖住这一层。
+/// 背景图:画进根 Ui 所在的 Background 层(LayerId::background()),铺满整个窗口
+/// (cover:保持宽高比、居中、超出裁剪),再压一层半透明黑保证前景可读。
+/// 本函数在所有面板之前调用;同一层内按绘制顺序叠加,故背景始终垫底。
+/// 注意不能用自建 Order::Background 图层——同档图层按 Id 哈希排序,可能盖住面板内容。
 fn paint_background(ui: &mut egui::Ui, assets: &Assets) {
     // 首帧输入尚未带屏幕矩形,跳过一帧不画
     let Some(screen) = ui.input(|i| i.raw.screen_rect) else { return };
@@ -196,8 +198,7 @@ fn paint_background(ui: &mut egui::Ui, assets: &Assets) {
     let scale = (screen.width() / size.x).max(screen.height() / size.y);
     let dst = egui::Rect::from_center_size(screen.center(), size * scale);
     let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
-    let painter =
-        ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Background, egui::Id::new("bg")));
+    let painter = ui.ctx().layer_painter(egui::LayerId::background());
     painter.image(assets.bg.id(), dst, uv, egui::Color32::WHITE);
     painter.rect_filled(screen, 0.0, egui::Color32::from_black_alpha(90));
 }
