@@ -8,7 +8,7 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
     eframe::run_native(
-        "Gemsleuth 宝石推理求解器",
+        "Gemsleuth 宝石推理求解器（归尘给小鱼特供版）",
         options,
         Box::new(|cc| Ok(Box::new(gemsleuth::gui::GemsleuthApp::new(cc)))),
     )
