@@ -17,6 +17,8 @@ pub mod asset_bytes {
     pub const EXACT: &[u8] = include_bytes!("../../assets/icons/exact.png");
     pub const PARTIAL: &[u8] = include_bytes!("../../assets/icons/partial.png");
     pub const UNKNOWN: &[u8] = include_bytes!("../../assets/icons/unknown.png");
+    /// 全窗口背景图(1820×1024),cover 方式铺满。
+    pub const BG: &[u8] = include_bytes!("../../assets/Bg_loading_loading_wurt_trailer.png");
 }
 
 pub struct Assets {
@@ -24,6 +26,7 @@ pub struct Assets {
     pub exact: egui::TextureHandle,
     pub partial: egui::TextureHandle,
     pub unknown: egui::TextureHandle,
+    pub bg: egui::TextureHandle,
 }
 
 fn tex(ctx: &egui::Context, name: &str, bytes: &[u8]) -> egui::TextureHandle {
@@ -48,6 +51,7 @@ impl Assets {
             exact: tex(ctx, "exact", asset_bytes::EXACT),
             partial: tex(ctx, "partial", asset_bytes::PARTIAL),
             unknown: tex(ctx, "unknown", asset_bytes::UNKNOWN),
+            bg: tex(ctx, "bg", asset_bytes::BG),
         }
     }
 
@@ -82,5 +86,7 @@ mod tests {
             assert_eq!(png_dims(b), (64, 64), "{name} 尺寸");
             image::load_from_memory(b).expect("{name} 解码失败");
         }
+        assert_eq!(png_dims(asset_bytes::BG), (1820, 1024), "bg 尺寸");
+        image::load_from_memory(asset_bytes::BG).expect("bg 解码失败");
     }
 }

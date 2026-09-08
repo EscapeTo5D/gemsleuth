@@ -187,6 +187,21 @@ fn install_cjk_fonts(ctx: &egui::Context) -> bool {
     false
 }
 
+/// 背景图:画在 Background 层铺满整个窗口(cover:保持宽高比、居中、超出裁剪),
+/// 再压一层半透明黑保证前景可读。CentralPanel 填充须透明,否则会盖住这一层。
+fn paint_background(ui: &mut egui::Ui, assets: &Assets) {
+    // 首帧输入尚未带屏幕矩形,跳过一帧不画
+    let Some(screen) = ui.input(|i| i.raw.screen_rect) else { return };
+    let size = assets.bg.size_vec2();
+    let scale = (screen.width() / size.x).max(screen.height() / size.y);
+    let dst = egui::Rect::from_center_size(screen.center(), size * scale);
+    let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
+    let painter =
+        ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Background, egui::Id::new("bg")));
+    painter.image(assets.bg.id(), dst, uv, egui::Color32::WHITE);
+    painter.rect_filled(screen, 0.0, egui::Color32::from_black_alpha(150));
+}
+
 fn settings_bar(ui: &mut egui::Ui, session: &mut SessionState, pending: &mut Option<Settings>) {
     ui.horizontal(|ui| {
         ui.strong("设置:");
@@ -280,14 +295,20 @@ impl eframe::App for GemsleuthApp {
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
-        let frame = egui::Frame::central_panel(ui.style()).inner_margin(egui::Margin::same(12));
+        paint_background(ui, &self.assets);
+        // 面板填充透明,否则会盖住背景层
+        let frame = egui::Frame::central_panel(ui.style())
+            .inner_margin(egui::Margin::same(12))
+            .fill(egui::Color32::TRANSPARENT);
         egui::CentralPanel::default().frame(frame).show(ui, |ui| {
             if self.font_warning {
                 ui.colored_label(egui::Color32::YELLOW, "警告:未找到系统中文字体,中文可能无法显示");
             }
-            egui::Panel::top(egui::Id::new("settings")).show(ui, |ui| {
-                settings_bar(ui, &mut self.session, &mut self.pending_settings);
-            });
+            egui::Panel::top(egui::Id::new("settings"))
+                .frame(egui::Frame::NONE)
+                .show(ui, |ui| {
+                    settings_bar(ui, &mut self.session, &mut self.pending_settings);
+                });
             ui.add_space(6.0);
             ui.horizontal(|ui| {
                 if tab_button(ui, self.tab == Tab::Solve, "整卷求解") {
