@@ -1,7 +1,9 @@
 //! 占位素材生成器(零第三方依赖,手写最小 PNG 编码)。
-//! 运行:`cargo run --example gen_assets`
-//! 真实素材到位后同名替换 assets/ 下文件重编译即可(规格 §5.2)。
+//! 运行:`cargo run --example gen_assets -- <要重生成的文件路径...>`
+//! 例:`cargo run --example gen_assets -- assets/icons/unknown.png`
+//! gem_0..5 已替换为真实宝石图标,默认不再重生成,只有显式点名才会覆盖。
 
+use std::env;
 use std::fs;
 use std::io;
 use std::path::Path;
@@ -77,7 +79,7 @@ fn png(width: u32, height: u32, pixel: impl Fn(u32, u32) -> [u8; 4]) -> Vec<u8> 
     out
 }
 
-// ---------- 绘制(圆形占位) ----------
+// ---------- 绘制(圆形占位 / 空槽磁贴) ----------
 
 fn mix(a: [u8; 3], b: [u8; 3], t: f32) -> [u8; 4] {
     let m = |x: u8, y: u8| (x as f32 * (1.0 - t) + y as f32 * t) as u8;
@@ -109,6 +111,12 @@ fn circle_png(size: u32, fill: [u8; 3], highlight: bool, ring: Option<([u8; 3], 
     })
 }
 
+/// 空槽占位:全透明。空槽在 UI 里用与色盘宝石同款的 Button 磁贴呈现,
+/// 方形效果来自按钮本身的深色底/圆角/描边,内部无需再画任何图形。
+fn transparent_png(size: u32) -> Vec<u8> {
+    png(size, size, |_, _| [0, 0, 0, 0])
+}
+
 // ---------- 主流程 ----------
 
 fn assert_png(b: &[u8], w: u32, h: u32) {
@@ -124,33 +132,48 @@ fn write(path: &str, bytes: &[u8]) -> io::Result<()> {
 }
 
 fn main() -> io::Result<()> {
-    // 颜色索引:0红 1蓝 2紫 3橙 4黄 5绿 6青 7白(规格 §5.2)
-    const GEM_COLORS: [[u8; 3]; 8] = [
-        [229, 57, 53],   // 红
-        [30, 136, 229],  // 蓝
-        [142, 36, 170],  // 紫
-        [251, 140, 0],   // 橙
-        [253, 216, 53],  // 黄
-        [67, 160, 71],   // 绿
-        [0, 172, 193],   // 青
-        [224, 224, 224], // 白
+    // 颜色索引:0红 1蓝 2紫 3橙 4黄 5绿(规格 §5.2,GUI 固定六色)
+    const GEM_COLORS: [[u8; 3]; 6] = [
+        [229, 57, 53],  // 红
+        [30, 136, 229], // 蓝
+        [142, 36, 170], // 紫
+        [251, 140, 0],  // 橙
+        [253, 216, 53], // 黄
+        [67, 160, 71],  // 绿
     ];
+
+    let wanted: Vec<String> = env::args().skip(1).collect();
+    if wanted.is_empty() {
+        println!("用法: cargo run --example gen_assets -- <要重生成的文件路径...>");
+        println!("  例: cargo run --example gen_assets -- assets/icons/unknown.png");
+        println!("注意: gem_0..5 与 exact/partial 已是真实素材,不点名不会覆盖");
+        return Ok(());
+    }
 
     fs::create_dir_all("assets/gems")?;
     fs::create_dir_all("assets/icons")?;
 
     for (i, rgb) in GEM_COLORS.iter().enumerate() {
+        let path = format!("assets/gems/gem_{i}.png");
+        if !wanted.contains(&path) {
+            continue;
+        }
         let bytes = circle_png(128, *rgb, true, None);
         assert_png(&bytes, 128, 128);
-        write(&format!("assets/gems/gem_{i}.png"), &bytes)?;
+        write(&path, &bytes)?;
     }
 
+    // exact/partial 已是真实游戏图标(方底裁圆版);unknown = 空槽磁贴内部(全透明,
+    // 方形效果由 UI 按钮磁贴提供)。以下仅为兜底占位,不点名不会覆盖真实素材。
     let icons = [
-        ("assets/icons/exact.png", circle_png(64, [30, 136, 229], false, None)),   // 蓝标
-        ("assets/icons/partial.png", circle_png(64, [255, 193, 7], false, None)),  // 金标
-        ("assets/icons/unknown.png", circle_png(64, [158, 158, 158], false, Some(([96, 96, 96], 0.5, 0.68)))),
+        ("assets/icons/exact.png", circle_png(64, [30, 136, 229], false, None)),   // 蓝标占位
+        ("assets/icons/partial.png", circle_png(64, [255, 193, 7], false, None)),  // 金标占位
+        ("assets/icons/unknown.png", transparent_png(64)),
     ];
     for (path, bytes) in icons {
+        if !wanted.contains(&path.to_string()) {
+            continue;
+        }
         assert_png(&bytes, 64, 64);
         write(path, &bytes)?;
     }

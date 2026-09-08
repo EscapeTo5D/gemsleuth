@@ -20,7 +20,10 @@ pub enum Tab { Solve, Assistant }
 /// 游戏规则:最多 6 轮猜测,之后必须提交最终答案。
 pub const MAX_ROUNDS: usize = 6;
 
-/// 会话默认:颜色数固定为 4(palette::COLORS)。
+/// 槽位数固定为 4(对齐当前真实游戏);核心引擎仍支持 3..=6,仅 GUI 固定。
+pub const SLOTS: usize = 4;
+
+/// 会话默认:颜色数固定为 6(palette::COLORS),槽位数固定为 4(SLOTS)。
 pub struct SessionState {
     pub settings: Settings,
     pub records: Vec<Record>,
@@ -30,7 +33,7 @@ pub struct SessionState {
 impl Default for SessionState {
     fn default() -> Self {
         Self {
-            settings: Settings { colors: palette::COLORS, ..Default::default() },
+            settings: Settings { colors: palette::COLORS, slots: SLOTS, ..Default::default() },
             records: Vec::new(),
             answer: Vec::new(),
         }
@@ -207,20 +210,9 @@ fn settings_bar(ui: &mut egui::Ui, session: &mut SessionState, pending: &mut Opt
     ui.horizontal(|ui| {
         ui.strong("设置:");
         let mut next = session.settings;
-        // 颜色数固定为 4(palette::COLORS),不再提供颜色数选项
-        // 不允许重复时,槽位数选项收窄到 ≤ 颜色数(§4.5 禁止非法组合)
-        egui::ComboBox::from_label("槽位数")
-            .selected_text(format!("{}", session.settings.slots))
-            .show_ui(ui, |ui| {
-                let max = if next.repeats { 6 } else { next.colors.min(6) };
-                for s in 3..=max {
-                    ui.selectable_value(&mut next.slots, s, format!("{s}"));
-                }
-            });
+        // 颜色数固定为 6(palette::COLORS),槽位数固定为 4(SLOTS),仅保留重复开关
         ui.checkbox(&mut next.repeats, "允许重复");
-        if !next.repeats && next.slots > next.colors {
-            ui.colored_label(egui::Color32::RED, "不允许重复时槽位数不能超过颜色数");
-        } else if next != session.settings {
+        if next != session.settings {
             *pending = Some(next); // 任何设置变化都弹确认(确认后清空记录,§4.5)
         }
         // 重置会话靠右
@@ -248,7 +240,7 @@ fn confirm_dialog(
     let (title, body) = if reset_only {
         ("重置会话", "确定要清空当前全部记录吗?")
     } else {
-        ("确认修改设置", "修改槽位数或重复设置将清空当前全部记录,确定吗?")
+        ("确认修改设置", "修改重复设置将清空当前全部记录,确定吗?")
     };
     let ctx = ui.ctx().clone();
     egui::Window::new(title)
