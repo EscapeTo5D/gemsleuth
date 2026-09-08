@@ -80,12 +80,16 @@ impl GemsleuthApp {
 /// 主题强调色(琥珀金):主按钮/选中 Tab/链接。
 pub const ACCENT: egui::Color32 = egui::Color32::from_rgb(235, 172, 58);
 
-/// 主操作按钮(琥珀底黑字,视觉上高于普通按钮)。
+/// 主操作按钮(琥珀底黑字,视觉上高于普通按钮)。文字用两侧 grow 原子撑到居中。
 pub fn primary_button(ui: &mut egui::Ui, label: &str, min_size: egui::Vec2) -> egui::Response {
     ui.add(
-        egui::Button::new(egui::RichText::new(label).strong().color(egui::Color32::BLACK))
-            .fill(ACCENT)
-            .min_size(min_size),
+        egui::Button::new((
+            egui::Atom::grow(),
+            egui::RichText::new(label).strong().color(egui::Color32::BLACK),
+            egui::Atom::grow(),
+        ))
+        .fill(ACCENT)
+        .min_size(min_size),
     )
 }
 
