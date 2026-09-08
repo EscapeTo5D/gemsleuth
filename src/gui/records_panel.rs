@@ -116,7 +116,7 @@ pub fn show(
                     editor.slots.truncate(slot);
                 }
             } else {
-                palette::empty_slot_button(ui, assets);
+                palette::empty_slot_button(ui);
             }
         }
         ui.separator();
@@ -195,7 +195,7 @@ fn answer_editor(
                     session.answer.truncate(slot);
                 }
             } else {
-                palette::empty_slot_button(ui, assets);
+                palette::empty_slot_button(ui);
             }
         }
     });

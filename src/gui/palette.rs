@@ -36,10 +36,17 @@ pub fn gem_button(ui: &mut egui::Ui, assets: &Assets, idx: u8) -> egui::Response
     image_tile(ui, sized).on_hover_text(name(idx))
 }
 
-/// 空槽位:与色盘宝石按钮同款磁贴(深色底/圆角/描边/悬停),内部为空。
-pub fn empty_slot_button(ui: &mut egui::Ui, assets: &Assets) -> egui::Response {
-    let sized = egui::load::SizedTexture::new(assets.unknown.id(), [32.0, 32.0]);
-    image_tile(ui, sized).on_hover_text("空槽位:点击下方色盘填入")
+/// 空槽位:与色盘宝石按钮同款磁贴(深色底/圆角/描边/悬停),内部空白不显示图标。
+pub fn empty_slot_button(ui: &mut egui::Ui) -> egui::Response {
+    ui.scope(|ui| {
+        ui.spacing_mut().button_padding = egui::vec2(2.0, 2.0);
+        ui.add(
+            egui::Button::new(egui::RichText::new(" ").size(10.0))
+                .min_size(egui::vec2(32.0, 32.0)),
+        )
+    })
+    .inner
+    .on_hover_text("空槽位:点击下方色盘填入")
 }
 
 /// 反馈标三态(与真实游戏一致):问号=无反馈,蓝标=位置和种类都对,金标=种类对位置错。
