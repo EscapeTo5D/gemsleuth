@@ -102,29 +102,101 @@ pub fn marks_grid(ui: &mut egui::Ui, assets: &Assets, exact: u8, partial: u8, sl
     });
 }
 
-/// 可点反馈标:点击循环 问号→蓝标→金标;2×2 矩阵,圆形按钮底。
+/// 归一化反馈标排列:蓝标在前、金标随后、问号补足,与只读网格同构(蓝金同存时蓝标必在前)。
+pub fn normalize_marks(marks: &mut [u8]) {
+    let (exact, partial) = counts_from_marks(marks);
+    let canonical = marks_from_counts(exact, partial, marks.len());
+    marks.copy_from_slice(&canonical);
+}
+
+/// 点击优先性:第 i 个标仅当前一标已点亮(非问号)时可点;第一个标恒可点。
+pub fn mark_clickable(marks: &[u8], i: usize) -> bool {
+    i == 0 || marks[i - 1] != MARK_UNKNOWN
+}
+
+/// 可点反馈标:点击循环 问号→蓝标→金标→问号;须按序点亮——前一标还是问号时,
+/// 此标置灰不可点;排列恒为 蓝标在前、金标随后、问号补足。
 /// 尺寸对齐:2×(20 图+4 边距) + 行距 6 = 54,与 54×54 宝石磁贴上下底齐平。
 pub fn mark_cycle_buttons(ui: &mut egui::Ui, assets: &Assets, marks: &mut [u8]) {
+    normalize_marks(marks);
+    let clickable: Vec<bool> = (0..marks.len()).map(|i| mark_clickable(marks, i)).collect();
     // vertical 强制两行堆叠:横向布局里嵌套 horizontal 会水平并排成 1 行
     ui.vertical(|ui| {
         ui.spacing_mut().item_spacing = egui::vec2(4.0, 6.0);
-        for chunk in marks.chunks_mut(2) {
+        for (row, chunk) in marks.chunks_mut(2).enumerate() {
             ui.horizontal(|ui| {
-                for m in chunk {
+                for (col, m) in chunk.iter_mut().enumerate() {
+                    let allowed = clickable[row * 2 + col];
                     let sized =
                         egui::load::SizedTexture::new(mark_tex(assets, *m).id(), [20.0, 20.0]);
                     let resp = ui.scope(|ui| {
                         ui.spacing_mut().button_padding = egui::vec2(2.0, 2.0);
-                        ui.add(
-                            egui::Button::image(sized).corner_radius(egui::CornerRadius::same(12)),
+                        ui.add_enabled(
+                            allowed,
+                            egui::Button::image(sized)
+                                .corner_radius(egui::CornerRadius::same(12)),
                         )
                     })
                     .inner;
-                    if resp.on_hover_text(format!("{}(点击切换)", mark_tip(*m))).clicked() {
+                    let tip = if allowed {
+                        format!("{}(点击切换)", mark_tip(*m))
+                    } else {
+                        "须按顺序点亮:先点击前面的反馈标".to_string()
+                    };
+                    if resp.on_hover_text(tip).clicked() {
                         *m = (*m + 1) % 3;
                     }
                 }
             });
         }
     });
+    // 切换可能把前位蓝标改成金标,重排保持蓝标恒在前
+    normalize_marks(marks);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn click(marks: &mut [u8], i: usize) {
+        assert!(mark_clickable(marks, i), "第 {i} 个标须先点亮前一个才能点");
+        marks[i] = (marks[i] + 1) % 3;
+        normalize_marks(marks);
+    }
+
+    #[test]
+    fn 归一化_蓝标恒在金标前() {
+        let mut m = vec![MARK_PARTIAL, MARK_UNKNOWN, MARK_EXACT, MARK_PARTIAL];
+        normalize_marks(&mut m);
+        assert_eq!(m, vec![MARK_EXACT, MARK_PARTIAL, MARK_PARTIAL, MARK_UNKNOWN]);
+    }
+
+    #[test]
+    fn 点击_按序点亮且排列恒规范() {
+        let mut m = vec![MARK_UNKNOWN; 4];
+        assert!(!mark_clickable(&m, 1) && !mark_clickable(&m, 3));
+        click(&mut m, 0); // 问号→蓝标
+        assert_eq!(m, vec![MARK_EXACT, MARK_UNKNOWN, MARK_UNKNOWN, MARK_UNKNOWN]);
+        click(&mut m, 0); // 蓝标→金标
+        click(&mut m, 1); // 金标后点亮的新标会被重排到金标前
+        assert_eq!(m, vec![MARK_EXACT, MARK_PARTIAL, MARK_UNKNOWN, MARK_UNKNOWN]);
+        click(&mut m, 0); // 蓝标→金标 → (0,2):纯金标可达
+        assert_eq!(m, vec![MARK_PARTIAL, MARK_PARTIAL, MARK_UNKNOWN, MARK_UNKNOWN]);
+        click(&mut m, 2); // → (1,2)
+        click(&mut m, 0); // → (0,3)
+        assert_eq!(m, vec![MARK_PARTIAL, MARK_PARTIAL, MARK_PARTIAL, MARK_UNKNOWN]);
+        click(&mut m, 2); // 金标→问号,逐个回落
+        click(&mut m, 1);
+        click(&mut m, 0);
+        assert_eq!(m, vec![MARK_UNKNOWN; 4]);
+    }
+
+    #[test]
+    fn 点击_清空前标后后续标锁定() {
+        let mut m = vec![MARK_EXACT, MARK_PARTIAL, MARK_UNKNOWN, MARK_UNKNOWN];
+        assert!(mark_clickable(&m, 0) && mark_clickable(&m, 1));
+        click(&mut m, 1); // 金标→问号
+        assert_eq!(m, vec![MARK_EXACT, MARK_UNKNOWN, MARK_UNKNOWN, MARK_UNKNOWN]);
+        assert!(mark_clickable(&m, 1) && !mark_clickable(&m, 2));
+    }
 }

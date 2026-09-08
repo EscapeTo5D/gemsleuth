@@ -105,7 +105,7 @@ pub fn show(
         editor.marks.resize(session.settings.slots, palette::MARK_UNKNOWN);
     }
 
-    // 槽位显示:点击已填槽位 = 清空该槽及之后;右侧反馈标点击循环 问号→蓝标→金标
+    // 槽位显示:点击已填槽位 = 清空该槽及之后;右侧反馈标按序点亮(前一标非问号才能点下一个),蓝标恒在金标前
     ui.horizontal(|ui| {
         for slot in 0..session.settings.slots {
             if let Some(&g) = editor.slots.get(slot) {
