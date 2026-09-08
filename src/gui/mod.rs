@@ -52,21 +52,49 @@ pub struct GemsleuthApp {
     pub tab: Tab,
     pub dirty: bool,                        // 任一会话变更 → 重算
     pub cached: CachedAnalysis,
+    /// 后台重算状态:脏标记只发请求,计算在独立线程完成经 channel 送回,
+    /// 期间 UI 持续用上一份 cached 渲染(显示"计算中"),不再整帧卡死。
+    pub compute_gen: u64,                                        // 最新任务代号
+    pub compute_rx: Option<std::sync::mpsc::Receiver<(u64, CachedAnalysis)>>,
+    pub computing: bool,                   // 最新代号的任务尚未返回
+    pub compute_pending: bool,             // 任务执行期间又有变更,收割后需补算
     pub solve_outcome: Option<SolveOutcome>, // 整卷求解快照(点击求解时更新)
     pub font_warning: bool,
     pub assets: Assets,
     pub editor: RecordEditor,
 }
 
+/// 由会话快照计算完整分析(过滤 + 推荐/嫌疑)。UI 线程启动时与后台线程共用。
+fn compute_cached(session: &SessionState) -> CachedAnalysis {
+    compute_cached_from(session.settings, session.records.clone())
+}
+
+fn compute_cached_from(settings: crate::Settings, records: Vec<crate::Record>) -> CachedAnalysis {
+    let candidates = crate::filter_candidates(&settings, &records);
+    let (recommendation, suspects) = if candidates.is_empty() {
+        (None, crate::suspect_records(&settings, &records))
+    } else {
+        (Some(crate::core::strategy::recommend_for(&settings, &candidates)), vec![])
+    };
+    CachedAnalysis { candidates, recommendation, suspects }
+}
+
 impl GemsleuthApp {
     pub fn new(cc: &eframe::CreationContext) -> Self {
         let font_warning = !install_cjk_fonts(&cc.egui_ctx);
         customize_visuals(&cc.egui_ctx);
+        let session = SessionState::default();
+        // 启动时记录为空,计算毫秒级,直接同步出首帧数据
+        let cached = compute_cached(&session);
         Self {
-            session: SessionState::default(),
+            session,
             tab: Tab::Assistant,
-            dirty: true,
-            cached: CachedAnalysis::default(),
+            dirty: false,
+            cached,
+            compute_gen: 0,
+            compute_rx: None,
+            computing: false,
+            compute_pending: false,
             solve_outcome: None,
             font_warning,
             assets: Assets::load(&cc.egui_ctx),
@@ -209,25 +237,49 @@ fn paint_background(ui: &mut egui::Ui, assets: &Assets) {
 }
 
 impl eframe::App for GemsleuthApp {
-    /// 每帧 UI 前调用,禁止画 UI——正好承载脏标记重算(§5.1 实时刷新且不卡帧)。
+    /// 每帧 UI 前调用,禁止阻塞——收割后台计算结果、按需派发新任务(§5.1 实时刷新)。
     fn logic(&mut self, _ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // 收割已完成的任务;只采纳最新代号,过期结果直接丢弃
+        if let Some(rx) = &self.compute_rx {
+            while let Ok((job_gen, result)) = rx.try_recv() {
+                if job_gen == self.compute_gen {
+                    self.cached = result;
+                    self.computing = false;
+                }
+            }
+        }
+        if !self.computing && self.compute_pending {
+            // 在跑的任务已收尾且期间有变更 → 对最新状态补算
+            self.compute_pending = false;
+            self.dirty = true;
+        }
         if !self.dirty {
             return;
         }
-        let candidates = crate::filter_candidates(&self.session.settings, &self.session.records);
-        let (recommendation, suspects) = if candidates.is_empty() {
-            (
-                None,
-                crate::suspect_records(&self.session.settings, &self.session.records),
-            )
-        } else {
-            (
-                Some(crate::core::strategy::recommend_for(&self.session.settings, &candidates)),
-                vec![],
-            )
-        };
-        self.cached = CachedAnalysis { candidates, recommendation, suspects };
+        if self.computing {
+            // 任务执行期间又有变更:合并请求,收割后再对最新状态补算
+            self.compute_pending = true;
+            return;
+        }
         self.dirty = false;
+        self.compute_gen += 1;
+        let job_gen = self.compute_gen;
+        let settings = self.session.settings;
+        let records = self.session.records.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.compute_rx = Some(rx);
+        self.computing = true;
+        std::thread::Builder::new()
+            .name("recompute".into())
+            .spawn(move || {
+                let analysis = compute_cached_from(settings, records);
+                let _ = tx.send((job_gen, analysis));
+            })
+            .expect("spawn recompute thread");
+        // 任务在跑期间保持低间隔轮询收割,否则空闲时无输入事件不会出新帧
+        if self.computing {
+            _ctx.request_repaint_after(std::time::Duration::from_millis(8));
+        }
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
@@ -268,6 +320,7 @@ impl eframe::App for GemsleuthApp {
                         &mut self.editor,
                         &mut self.dirty,
                         &self.cached,
+                        self.computing,
                     )
                 }
                 Tab::Solve => solve_panel::show(

@@ -16,8 +16,14 @@ pub fn show(
     editor: &mut RecordEditor,
     dirty: &mut bool,
     cached: &CachedAnalysis,
+    computing: bool,
 ) {
-    ui.heading("陪玩助手");
+    ui.horizontal(|ui| {
+        ui.heading("陪玩助手");
+        if computing {
+            ui.label(egui::RichText::new("(后台计算中,稍后自动刷新…)").weak());
+        }
+    });
     match cached.candidates.len() {
         0 => {
             ui.colored_label(egui::Color32::RED, "记录矛盾!剩余候选为 0,请检查录入。");
