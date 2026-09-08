@@ -130,10 +130,10 @@ fn customize_visuals(ctx: &egui::Context) {
     });
 }
 
-/// 推荐猜测展示行(两结果面板共用,§5.1)。
+/// 推荐猜测展示行(两结果面板共用,§5.1)。标签独立成行,宝石与备注另起一行。
 pub fn recommendation_row(ui: &mut egui::Ui, assets: &Assets, rec: &Recommendation) {
+    ui.strong("推荐下一猜:");
     ui.horizontal(|ui| {
-        ui.strong("推荐下一猜:");
         match rec {
             Recommendation::Answer(ans) => {
                 for &g in ans {
