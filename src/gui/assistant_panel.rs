@@ -4,7 +4,8 @@
 use eframe::egui;
 
 use crate::gui::{
-    palette, recommendation_row, suspects_row, Assets, CachedAnalysis, MAX_ROUNDS, SessionState,
+    palette, primary_button, recommendation_row, suspects_row, Assets, CachedAnalysis, MAX_ROUNDS,
+    SessionState,
 };
 use crate::gui::records_panel::RecordEditor;
 
@@ -29,9 +30,8 @@ pub fn show(
                     palette::big_gem(ui, assets, g);
                 }
             });
-            // 一局终了:一键清空记录开新局
-            if ui
-                .button("清除记录")
+            // 一局终了:一键清空记录开新局(与录入区主操作同款琥珀主按钮)
+            if primary_button(ui, "清除记录", egui::vec2(110.0, 30.0))
                 .on_hover_text("清空全部记录,开始新的一局")
                 .clicked()
             {
