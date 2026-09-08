@@ -121,6 +121,18 @@ pub fn show(
         }
         ui.separator();
         palette::mark_cycle_buttons(ui, assets, &mut editor.marks);
+        // 常显图例:两个彩色反馈标的含义(细节仍在悬浮提示)
+        ui.separator();
+        ui.vertical(|ui| {
+            ui.horizontal(|ui| {
+                ui.image(egui::load::SizedTexture::new(assets.exact.id(), [16.0, 16.0]));
+                ui.label(egui::RichText::new("位置和颜色都对").weak().small());
+            });
+            ui.horizontal(|ui| {
+                ui.image(egui::load::SizedTexture::new(assets.partial.id(), [16.0, 16.0]));
+                ui.label(egui::RichText::new("颜色对、位置错").weak().small());
+            });
+        });
     });
     // 点击色盘依次填入空槽(标签独立一行,色盘另起一行)
     ui.label("点击填入:");
