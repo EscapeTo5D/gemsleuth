@@ -146,7 +146,7 @@ fn main() -> io::Result<()> {
     if wanted.is_empty() {
         println!("用法: cargo run --example gen_assets -- <要重生成的文件路径...>");
         println!("  例: cargo run --example gen_assets -- assets/icons/unknown.png");
-        println!("注意: gem_0..5 已是真实素材,不点名不会覆盖");
+        println!("注意: gem_0..5 与 exact/partial 已是真实素材,不点名不会覆盖");
         return Ok(());
     }
 
@@ -163,10 +163,11 @@ fn main() -> io::Result<()> {
         write(&path, &bytes)?;
     }
 
-    // unknown = 空槽磁贴内部(全透明,方形效果由 UI 按钮磁贴提供)
+    // exact/partial 已是真实游戏图标(方底裁圆版);unknown = 空槽磁贴内部(全透明,
+    // 方形效果由 UI 按钮磁贴提供)。以下仅为兜底占位,不点名不会覆盖真实素材。
     let icons = [
-        ("assets/icons/exact.png", circle_png(64, [30, 136, 229], false, None)),   // 蓝标
-        ("assets/icons/partial.png", circle_png(64, [255, 193, 7], false, None)),  // 金标
+        ("assets/icons/exact.png", circle_png(64, [30, 136, 229], false, None)),   // 蓝标占位
+        ("assets/icons/partial.png", circle_png(64, [255, 193, 7], false, None)),  // 金标占位
         ("assets/icons/unknown.png", transparent_png(64)),
     ];
     for (path, bytes) in icons {
