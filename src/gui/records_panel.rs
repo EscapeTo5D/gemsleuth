@@ -9,16 +9,14 @@ use crate::gui::{palette, primary_button, Assets, CachedAnalysis, MAX_ROUNDS, Se
 #[derive(Default)]
 pub struct RecordEditor {
     pub slots: Vec<u8>,
-    pub exact: u8,
-    pub partial: u8,
+    pub marks: Vec<u8>, // 逐槽反馈标(palette::MARK_*),蓝标/金标计数由它得出
     pub editing: Option<usize>, // Some(i) = 修改第 i 条
 }
 
 impl RecordEditor {
     pub fn reset(&mut self) {
         self.slots.clear();
-        self.exact = 0;
-        self.partial = 0;
+        self.marks.clear();
         self.editing = None;
     }
 }
@@ -59,19 +57,19 @@ pub fn show(
                             for &g in &rec.guess {
                                 palette::small_gem(ui, assets, g);
                             }
-                            palette::icon_count(ui, assets, true, rec.exact);
-                            palette::icon_count(ui, assets, false, rec.partial);
+                            // 反馈标按真实游戏排版:2 列图标块(蓝金上排,问号下排)
+                            palette::marks_grid(ui, assets, rec.exact, rec.partial, rec.guess.len());
                             if cached.suspects.contains(&i) {
                                 ui.colored_label(egui::Color32::RED, "嫌疑");
                             }
                         });
                         // 轮次已用满时不再进入编辑(编辑区已切换为答案提交)
-                        if can_edit && ui.small_button("编辑").clicked() {
-                            editor.slots = rec.guess.clone();
-                            editor.exact = rec.exact;
-                            editor.partial = rec.partial;
-                            editor.editing = Some(i);
-                        }
+                if can_edit && ui.small_button("编辑").clicked() {
+                    editor.slots = rec.guess.clone();
+                    editor.marks =
+                        palette::marks_from_counts(rec.exact, rec.partial, rec.guess.len());
+                    editor.editing = Some(i);
+                }
                         if ui.small_button("删除").clicked() {
                             delete = Some(i);
                         }
@@ -102,7 +100,12 @@ pub fn show(
         format!("新增记录(第 {} / {MAX_ROUNDS} 轮)", session.records.len() + 1)
     });
 
-    // 槽位显示:点击已填槽位 = 清空该槽及之后
+    // 反馈标与槽位等长(默认全部问号;轮次用满切答案提交前不会走到这里)
+    if editor.marks.len() != session.settings.slots {
+        editor.marks.resize(session.settings.slots, palette::MARK_UNKNOWN);
+    }
+
+    // 槽位显示:点击已填槽位 = 清空该槽及之后;右侧反馈标点击循环 问号→蓝标→金标
     ui.horizontal(|ui| {
         for slot in 0..session.settings.slots {
             if let Some(&g) = editor.slots.get(slot) {
@@ -116,6 +119,8 @@ pub fn show(
                 palette::empty_slot_button(ui, assets);
             }
         }
+        ui.separator();
+        palette::mark_cycle_buttons(ui, assets, &mut editor.marks);
     });
     // 点击色盘依次填入空槽
     ui.horizontal(|ui| {
@@ -128,32 +133,9 @@ pub fn show(
             }
         }
     });
-    // 计数:定义内联展示,一眼分清两个概念;悬浮补充重复计数的细节
-    ui.horizontal(|ui| {
-        ui.image(egui::load::SizedTexture::new(assets.exact.id(), [20.0, 20.0]));
-        ui.strong("蓝标");
-        ui.add(
-            egui::DragValue::new(&mut editor.exact).range(0..=session.settings.slots as u8),
-        )
-        .on_hover_text("宝石种类和位置都对的数量;如答案第 1 位是红、你猜的也是红 → 蓝标 +1");
-        ui.label(egui::RichText::new("= 位置和颜色都对").weak());
-    });
-    ui.horizontal(|ui| {
-        ui.image(egui::load::SizedTexture::new(assets.partial.id(), [20.0, 20.0]));
-        ui.strong("金标");
-        ui.add(
-            egui::DragValue::new(&mut editor.partial).range(0..=session.settings.slots as u8),
-        )
-        .on_hover_text("宝石种类对但位置错的数量;同一颜色重复出现时,按两边较少的一侧计数");
-        ui.label(egui::RichText::new("= 颜色对、位置错").weak());
-    });
 
-    let candidate = Record {
-        guess: editor.slots.clone(),
-        exact: editor.exact,
-        partial: editor.partial,
-        enabled: true,
-    };
+    let (exact, partial) = palette::counts_from_marks(&editor.marks);
+    let candidate = Record { guess: editor.slots.clone(), exact, partial, enabled: true };
     let valid_and_full = editor.slots.len() == session.settings.slots
         && candidate.validate(&session.settings).is_ok();
     if valid_and_full {
