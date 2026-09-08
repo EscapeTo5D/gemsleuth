@@ -1,6 +1,9 @@
 //! 分层自适应推荐(§4.4):熵最大化 / 精确前瞻。
 
 use std::collections::HashMap;
+use std::sync::Mutex;
+
+use rayon::prelude::*;
 
 use crate::core::model::Record;
 use crate::core::model::Settings;
@@ -44,21 +47,28 @@ pub(crate) fn sample_guesses(space: &[Vec<u8>], n: usize) -> Vec<Vec<u8>> {
 pub(crate) fn entropy_best(candidates: &[Vec<u8>], guesses: &[Vec<u8>]) -> (Vec<u8>, f64, usize) {
     let n = candidates.len() as f64;
     let cand_set: std::collections::HashSet<&Vec<u8>> = candidates.iter().collect();
+    // 各猜测的打分相互独立 → 并行计算;浮点求和仍在单猜测内按同一顺序完成,结果与串行逐位一致
+    let scores: Vec<(f64, usize, bool)> = guesses
+        .par_iter()
+        .map(|g| {
+            let mut buckets: HashMap<(u8, u8), usize> = HashMap::new();
+            for c in candidates {
+                *buckets.entry(crate::core::judge::judge(g, c)).or_insert(0) += 1;
+            }
+            // 对桶大小排序后求和,消除 HashMap 遍历序带来的浮点误差
+            let mut sizes: Vec<usize> = buckets.values().copied().collect();
+            sizes.sort_unstable();
+            let h = -sizes
+                .iter()
+                .map(|&v| { let p = v as f64 / n; p * p.log2() })
+                .sum::<f64>();
+            let worst = sizes[sizes.len() - 1];
+            (h, worst, cand_set.contains(g))
+        })
+        .collect();
+    // 按枚举序串行归约,保持原有平手裁决(先枚举序取首个 argmax,平手偏向候选集内)
     let mut best: Option<(Vec<u8>, f64, usize, bool)> = None; // (guess, 熵, 最坏桶, 是否属候选集)
-    for g in guesses {
-        let mut buckets: HashMap<(u8, u8), usize> = HashMap::new();
-        for c in candidates {
-            *buckets.entry(crate::core::judge::judge(g, c)).or_insert(0) += 1;
-        }
-        // 对桶大小排序后求和,消除 HashMap 遍历序带来的浮点误差
-        let mut sizes: Vec<usize> = buckets.values().copied().collect();
-        sizes.sort_unstable();
-        let h = -sizes
-            .iter()
-            .map(|&v| { let p = v as f64 / n; p * p.log2() })
-            .sum::<f64>();
-        let worst = sizes[sizes.len() - 1];
-        let in_cand = cand_set.contains(g);
+    for (g, (h, worst, in_cand)) in guesses.iter().zip(scores) {
         let replace = match &best {
             None => true,
             Some((_, bh, _, b_in)) => {
@@ -145,12 +155,42 @@ fn entropy_pick(settings: &Settings, candidates: &[Vec<u8>]) -> (Vec<u8>, f64, u
 }
 
 /// 记忆化键:(剩余深度, 候选集扁平化)。值 None = 该预算下无法证明。
+/// 分片共享 memo:跨并行任务全局复用子问题(原串行版的提速关键),
+/// 64 片 Mutex 降低争用;缓存是纯函数结果,不影响确定性。
+struct SharedMemo {
+    shards: Vec<Mutex<HashMap<(usize, Vec<u8>), Option<usize>>>>,
+}
+
+impl SharedMemo {
+    fn new() -> Self {
+        Self {
+            shards: (0..64).map(|_| Mutex::new(HashMap::new())).collect(),
+        }
+    }
+    fn get(&self, key: &(usize, Vec<u8>)) -> Option<Option<usize>> {
+        let shard = Self::shard_of(key);
+        self.shards[shard].lock().unwrap().get(key).copied()
+    }
+    fn insert(&self, key: (usize, Vec<u8>), val: Option<usize>) {
+        let shard = Self::shard_of(&key);
+        self.shards[shard].lock().unwrap().insert(key, val);
+    }
+    fn shard_of(key: &(usize, Vec<u8>)) -> usize {
+        // 简单折叠哈希:预算号混入键字节,分布足够均匀即可
+        let mut h = key.0 as usize;
+        for &b in &key.1 {
+            h = h.wrapping_mul(31) + b as usize;
+        }
+        h % 64
+    }
+}
+
 fn lookahead_steps(
     cands: &[Vec<u8>],
     guesses: &[Vec<u8>],
     terminal: (u8, u8),
     budget: usize,
-    memo: &mut HashMap<(usize, Vec<u8>), Option<usize>>,
+    memo: &SharedMemo,
 ) -> Option<usize> {
     if cands.len() == 1 {
         return Some(1); // 已知答案,提交 1 次
@@ -160,7 +200,7 @@ fn lookahead_steps(
     }
     let key = (budget, cands.iter().flat_map(|c| c.iter().copied()).collect::<Vec<u8>>());
     if let Some(cached) = memo.get(&key) {
-        return *cached;
+        return cached;
     }
     let mut best: Option<usize> = None;
     for g in guesses {
@@ -193,10 +233,40 @@ fn lookahead_steps(
     best
 }
 
+/// 玩 g 后的最坏剩余步数:max(非终局桶 steps(桶, budget-1))。
+/// budget=0 直接不可证(与递归入口的预算检查语义一致,usize 下不会减到负)。
+fn worst_after_guess(
+    g: &[u8],
+    cands: &[Vec<u8>],
+    guesses: &[Vec<u8>],
+    terminal: (u8, u8),
+    budget: usize,
+    memo: &SharedMemo,
+) -> Option<usize> {
+    if budget == 0 {
+        return None;
+    }
+    let mut buckets: HashMap<(u8, u8), Vec<Vec<u8>>> = HashMap::new();
+    for c in cands {
+        buckets.entry(crate::core::judge::judge(g, c)).or_default().push(c.clone());
+    }
+    let mut worst = 0usize;
+    for (fb, bucket) in &buckets {
+        if *fb == terminal {
+            continue;
+        }
+        worst = worst.max(lookahead_steps(bucket, guesses, terminal, budget - 1, memo)?);
+    }
+    Some(worst)
+}
+
 /// minimax 前瞻:返回保证最少剩余步数(含本次猜测)的猜测与该步数;
 /// 深度预算用尽无法证明 → None(理论下 ≤30 候选、cap=3 不会发生)。
 /// 步数语义:steps(C)=1+min_g max_{非终局桶} steps(桶);反馈=(slots,0) 为终局桶;
 /// 单候选桶 steps=1(直接提交)。
+/// 并行化:根层各猜测独立评估 → rayon 并行;子问题经分片共享 memo 全局复用
+/// (原串行版提速关键);min 归约与平手裁决(先枚举序取首个达成者)串行确定,
+/// 结果与串行版逐位一致。
 pub(crate) fn lookahead_best(
     candidates: &[Vec<u8>],
     guesses: &[Vec<u8>],
@@ -205,33 +275,15 @@ pub(crate) fn lookahead_best(
     debug_assert!(!candidates.is_empty() && !guesses.is_empty());
     let slots = candidates[0].len() as u8;
     let terminal = (slots, 0);
-    let mut memo: HashMap<(usize, Vec<u8>), Option<usize>> = HashMap::new();
-    let best = lookahead_steps(candidates, guesses, terminal, depth_cap, &mut memo)?;
-    // 找到达成该保证的第一个猜测(枚举序,裁决确定)
-    for g in guesses {
-        let mut buckets: HashMap<(u8, u8), Vec<Vec<u8>>> = HashMap::new();
-        for c in candidates {
-            buckets.entry(crate::core::judge::judge(g, c)).or_default().push(c.clone());
-        }
-        let mut worst = 0usize;
-        let mut provable = true;
-        for (fb, bucket) in &buckets {
-            if *fb == terminal {
-                continue;
-            }
-            match lookahead_steps(bucket, guesses, terminal, depth_cap - 1, &mut memo) {
-                Some(v) => worst = worst.max(v),
-                None => {
-                    provable = false;
-                    break;
-                }
-            }
-        }
-        if provable && 1 + worst == best {
-            return Some((g.clone(), best));
-        }
-    }
-    unreachable!("已由 lookahead_steps 证明存在达成保证的猜测")
+    let memo = SharedMemo::new();
+    let totals: Vec<Option<usize>> = guesses
+        .par_iter()
+        .map(|g| worst_after_guess(g, candidates, guesses, terminal, depth_cap, &memo))
+        .collect();
+    let best = totals.iter().filter_map(|t| *t).map(|w| 1 + w).min()?;
+    // 平手裁决:枚举序中第一个达成保证步数的猜测
+    let idx = totals.iter().position(|t| t.map_or(false, |w| 1 + w == best))?;
+    Some((guesses[idx].clone(), best))
 }
 
 #[cfg(test)]

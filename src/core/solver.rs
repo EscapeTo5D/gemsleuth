@@ -1,5 +1,7 @@
 //! 全空间枚举 + 过滤 + 求解编排(§4.3)。
 
+use rayon::prelude::*;
+
 use crate::core::judge::judge;
 use crate::core::model::Record;
 use crate::core::model::Settings;
@@ -53,17 +55,21 @@ pub fn enumerate_space(settings: &Settings) -> Vec<Vec<u8>> {
 }
 
 /// 返回使所有 enabled 记录的判定反馈与录入值完全一致的候选(§4.3 第 2 步)。
-/// 禁用的记录不参与过滤(F4/F5)。保持枚举序。
+/// 禁用的记录不参与过滤(F4/F5)。大空间 rayon 并行过滤(保枚举序),
+/// 小空间走串行(rayon 任务调度开销反而更慢)。
 pub fn filter_candidates(settings: &Settings, records: &[Record]) -> Vec<Vec<u8>> {
-    enumerate_space(settings)
-        .into_iter()
-        .filter(|cand| {
-            records
-                .iter()
-                .filter(|r| r.enabled)
-                .all(|r| judge(&r.guess, cand) == (r.exact, r.partial))
-        })
-        .collect()
+    let active: Vec<&Record> = records.iter().filter(|r| r.enabled).collect();
+    let matches = |cand: &Vec<u8>| {
+        active
+            .iter()
+            .all(|r| judge(&r.guess, cand) == (r.exact, r.partial))
+    };
+    let space = enumerate_space(settings);
+    if space.len() < 4096 {
+        space.into_iter().filter(matches).collect()
+    } else {
+        space.into_par_iter().filter(matches).collect()
+    }
 }
 
 /// 求解编排结果(§4.3,GUI 与最终用户依赖)。
@@ -91,11 +97,13 @@ pub fn solve(settings: &Settings, records: &[Record]) -> SolveOutcome {
 }
 
 /// 矛盾排查(F5):当前整体矛盾时,返回"禁用后候选恢复非空"的记录下标;非矛盾返回空。
+/// 逐条并行复查(每条内部过滤亦并行),rayon filter 保序。
 pub fn suspect_records(settings: &Settings, records: &[Record]) -> Vec<usize> {
     if !filter_candidates(settings, records).is_empty() {
         return vec![]; // 整体不矛盾时无嫌疑可谈
     }
     (0..records.len())
+        .into_par_iter()
         .filter(|&i| {
             records[i].enabled && {
                 let mut others = records.to_vec();
