@@ -21,12 +21,8 @@ pub fn big_gem(ui: &mut egui::Ui, assets: &Assets, idx: u8) {
     ui.image(egui::load::SizedTexture::new(assets.gem(idx).id(), [64.0, 64.0]));
 }
 
-/// 宝石磁贴按钮:32×32 图 + 2px 对称内边距 → 36×36,框紧贴宝石图。
-/// 全局 button_padding 为 (10,5),直接套 Button::image 会得到 52×42 的扁框,故局部覆盖。
-fn image_tile(ui: &mut egui::Ui, sized: egui::load::SizedTexture) -> egui::Response {
-    image_tile_pad(ui, sized, 2.0)
-}
-
+/// 宝石磁贴按钮:图 + 对称内边距,框紧贴宝石图。
+/// 全局 button_padding 为 (10,5),直接套 Button::image 会得到扁框,故局部覆盖。
 fn image_tile_pad(ui: &mut egui::Ui, sized: egui::load::SizedTexture, pad: f32) -> egui::Response {
     ui.scope(|ui| {
         ui.spacing_mut().button_padding = egui::vec2(pad, pad);
@@ -89,29 +85,45 @@ pub fn counts_from_marks(marks: &[u8]) -> (u8, u8) {
     (n(MARK_EXACT), n(MARK_PARTIAL))
 }
 
-/// 只读反馈标网格:每行 2 枚 20×20,对应真实游戏记录行的右侧图标块。
+/// 只读反馈标网格:2×2(蓝金上排,问号下排),对应真实游戏记录行的右侧图标块。
 pub fn marks_grid(ui: &mut egui::Ui, assets: &Assets, exact: u8, partial: u8, slots: usize) {
-    for chunk in marks_from_counts(exact, partial, slots).chunks(2) {
-        ui.horizontal(|ui| {
-            for &m in chunk {
-                ui.image(egui::load::SizedTexture::new(mark_tex(assets, m).id(), [20.0, 20.0]))
-                    .on_hover_text(mark_tip(m));
-            }
-        });
-    }
+    // vertical 强制两行堆叠:横向布局里嵌套 horizontal 会水平并排成 1 行
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(4.0, 4.0);
+        for chunk in marks_from_counts(exact, partial, slots).chunks(2) {
+            ui.horizontal(|ui| {
+                for &m in chunk {
+                    ui.image(egui::load::SizedTexture::new(mark_tex(assets, m).id(), [20.0, 20.0]))
+                        .on_hover_text(mark_tip(m));
+                }
+            });
+        }
+    });
 }
 
-/// 可点反馈标:点击循环 问号→蓝标→金标,每行 2 枚 24×24,替代原数字计数输入。
+/// 可点反馈标:点击循环 问号→蓝标→金标;2×2 矩阵,圆形按钮底。
+/// 尺寸对齐:2×(20 图+4 边距) + 行距 6 = 54,与 54×54 宝石磁贴上下底齐平。
 pub fn mark_cycle_buttons(ui: &mut egui::Ui, assets: &Assets, marks: &mut [u8]) {
-    for chunk in marks.chunks_mut(2) {
-        ui.horizontal(|ui| {
-            for m in chunk {
-                let sized = egui::load::SizedTexture::new(mark_tex(assets, *m).id(), [24.0, 24.0]);
-                let resp = image_tile(ui, sized);
-                if resp.on_hover_text(format!("{}(点击切换)", mark_tip(*m))).clicked() {
-                    *m = (*m + 1) % 3;
+    // vertical 强制两行堆叠:横向布局里嵌套 horizontal 会水平并排成 1 行
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(4.0, 6.0);
+        for chunk in marks.chunks_mut(2) {
+            ui.horizontal(|ui| {
+                for m in chunk {
+                    let sized =
+                        egui::load::SizedTexture::new(mark_tex(assets, *m).id(), [20.0, 20.0]);
+                    let resp = ui.scope(|ui| {
+                        ui.spacing_mut().button_padding = egui::vec2(2.0, 2.0);
+                        ui.add(
+                            egui::Button::image(sized).corner_radius(egui::CornerRadius::same(12)),
+                        )
+                    })
+                    .inner;
+                    if resp.on_hover_text(format!("{}(点击切换)", mark_tip(*m))).clicked() {
+                        *m = (*m + 1) % 3;
+                    }
                 }
-            }
-        });
-    }
+            });
+        }
+    });
 }
