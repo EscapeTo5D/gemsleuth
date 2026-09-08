@@ -3,7 +3,7 @@
 use eframe::egui;
 
 use crate::SolveOutcome;
-use crate::gui::{palette, primary_button, recommendation_row, suspects_row, Assets, SessionState};
+use crate::gui::{palette, primary_button, recommendation_row, suspects_row, Assets, MAX_ROUNDS, SessionState};
 
 pub fn show(
     ui: &mut egui::Ui,
@@ -51,7 +51,11 @@ pub fn show(
                         }
                     });
             }
-            recommendation_row(ui, assets, recommendation);
+            if session.records.len() >= MAX_ROUNDS {
+                ui.label(egui::RichText::new("猜测轮次已用完:请在上方提交最终答案").weak());
+            } else {
+                recommendation_row(ui, assets, recommendation);
+            }
         }
     }
 }

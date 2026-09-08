@@ -17,10 +17,14 @@ pub use assets::Assets;
 #[derive(Clone, Copy, PartialEq)]
 pub enum Tab { Solve, Assistant }
 
+/// 游戏规则:最多 6 轮猜测,之后必须提交最终答案。
+pub const MAX_ROUNDS: usize = 6;
+
 /// 会话默认:颜色数固定为 4(palette::COLORS)。
 pub struct SessionState {
     pub settings: Settings,
     pub records: Vec<Record>,
+    pub answer: Vec<u8>, // 第 MAX_ROUNDS+1 轮的最终答案草稿
 }
 
 impl Default for SessionState {
@@ -28,6 +32,7 @@ impl Default for SessionState {
         Self {
             settings: Settings { colors: palette::COLORS, ..Default::default() },
             records: Vec::new(),
+            answer: Vec::new(),
         }
     }
 }
@@ -240,6 +245,7 @@ fn confirm_dialog(
                 if primary_button(ui, "确定", egui::vec2(84.0, 30.0)).clicked() {
                     session.settings = pending.take().unwrap();
                     session.records.clear();
+                    session.answer.clear();
                     editor.reset(); // 同步清空编辑器,防止悬空 editing 索引(规格 §5.1)
                     *solve_outcome = None; // 记录全清,求解快照一并失效
                     *dirty = true;
@@ -297,8 +303,8 @@ impl eframe::App for GemsleuthApp {
                 &self.assets,
                 &mut self.session,
                 &mut self.editor,
+                &self.cached,
                 &mut self.dirty,
-                &self.cached.suspects,
             );
             ui.separator();
             match self.tab {
@@ -309,7 +315,9 @@ impl eframe::App for GemsleuthApp {
                     &mut self.solve_outcome,
                     &self.cached.suspects,
                 ),
-                Tab::Assistant => assistant_panel::show(ui, &self.assets, &self.cached),
+                Tab::Assistant => {
+                    assistant_panel::show(ui, &self.assets, &self.session, &self.cached)
+                }
             }
             confirm_dialog(
                 ui,

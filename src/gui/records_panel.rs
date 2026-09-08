@@ -1,9 +1,10 @@
 //! 记录录入/编辑区(§5.1,两 Tab 共享):增、删、改、启用/禁用、嫌疑标记。
+//! 规则:最多 MAX_ROUNDS 轮猜测,轮次用完后此区切换为最终答案提交。
 
 use eframe::egui;
 
 use crate::Record;
-use crate::gui::{palette, primary_button, Assets, SessionState};
+use crate::gui::{palette, primary_button, Assets, CachedAnalysis, MAX_ROUNDS, SessionState};
 
 #[derive(Default)]
 pub struct RecordEditor {
@@ -27,12 +28,14 @@ pub fn show(
     assets: &Assets,
     session: &mut SessionState,
     editor: &mut RecordEditor,
+    cached: &CachedAnalysis,
     dirty: &mut bool,
-    suspects: &[usize],
 ) {
     ui.heading("记录");
     if session.records.is_empty() {
-        ui.label(egui::RichText::new("暂无记录;在下方录入第一条,陪玩助手会实时给出候选与推荐").weak());
+        ui.label(egui::RichText::new(
+            format!("暂无记录;在下方录入第一条(共 {MAX_ROUNDS} 轮猜测机会),陪玩助手会实时给出候选与推荐"),
+        ).weak());
     } else {
         // 单行一条(开关 + 宝石 + 计数 + 操作),列表放滚动区,长列表不挤压下方编辑器
         egui::ScrollArea::vertical()
@@ -40,6 +43,7 @@ pub fn show(
             .max_height(200.0)
             .show(ui, |ui| {
                 let mut delete = None;
+                let can_edit = session.records.len() < MAX_ROUNDS;
                 for (i, rec) in session.records.iter_mut().enumerate() {
                     ui.horizontal(|ui| {
                         if ui
@@ -57,11 +61,12 @@ pub fn show(
                             }
                             palette::icon_count(ui, assets, true, rec.exact);
                             palette::icon_count(ui, assets, false, rec.partial);
-                            if suspects.contains(&i) {
+                            if cached.suspects.contains(&i) {
                                 ui.colored_label(egui::Color32::RED, "嫌疑");
                             }
                         });
-                        if ui.small_button("编辑").clicked() {
+                        // 轮次已用满时不再进入编辑(编辑区已切换为答案提交)
+                        if can_edit && ui.small_button("编辑").clicked() {
                             editor.slots = rec.guess.clone();
                             editor.exact = rec.exact;
                             editor.partial = rec.partial;
@@ -74,6 +79,7 @@ pub fn show(
                 }
                 if let Some(i) = delete {
                     session.records.remove(i);
+                    session.answer.clear();
                     match editor.editing {
                         Some(e) if e == i => editor.reset(),
                         Some(e) if e > i => editor.editing = Some(e - 1),
@@ -85,7 +91,16 @@ pub fn show(
     }
 
     ui.add_space(6.0);
-    ui.strong(if editor.editing.is_some() { "修改记录" } else { "新增记录" });
+    if session.records.len() >= MAX_ROUNDS {
+        answer_editor(ui, assets, session, cached);
+        return;
+    }
+
+    ui.strong(if editor.editing.is_some() {
+        "修改记录".to_string()
+    } else {
+        format!("新增记录(第 {} / {MAX_ROUNDS} 轮)", session.records.len() + 1)
+    });
 
     // 槽位显示:点击已填槽位 = 清空该槽及之后
     ui.horizontal(|ui| {
@@ -173,5 +188,67 @@ pub fn show(
         );
     } else {
         ui.label(egui::RichText::new("(请填满所有槽位)").weak());
+    }
+}
+
+/// 第 MAX_ROUNDS+1 轮:提交最终答案。填满即自动判卷,无需按钮。
+/// 判卷依据:答案 ∈ 剩余候选(与全部启用记录一致);候选唯一则推理必正确。
+fn answer_editor(
+    ui: &mut egui::Ui,
+    assets: &Assets,
+    session: &mut SessionState,
+    cached: &CachedAnalysis,
+) {
+    ui.strong(format!("第 {} 轮:提交最终答案", MAX_ROUNDS + 1));
+    ui.horizontal(|ui| {
+        for slot in 0..session.settings.slots {
+            if let Some(&g) = session.answer.get(slot) {
+                if palette::gem_button(ui, assets, g)
+                    .on_hover_text("点击清空此槽及之后")
+                    .clicked()
+                {
+                    session.answer.truncate(slot);
+                }
+            } else {
+                ui.image(egui::load::SizedTexture::new(assets.unknown.id(), [32.0, 32.0]));
+            }
+        }
+    });
+    ui.horizontal(|ui| {
+        ui.label("点击填入:");
+        for color in 0..session.settings.colors as u8 {
+            if palette::gem_button(ui, assets, color).clicked()
+                && session.answer.len() < session.settings.slots
+            {
+                session.answer.push(color);
+            }
+        }
+        if !session.answer.is_empty() && ui.small_button("清空").clicked() {
+            session.answer.clear();
+        }
+    });
+    if session.answer.len() < session.settings.slots {
+        ui.label(egui::RichText::new("(请填满所有槽位)").weak());
+        return;
+    }
+    let full = session.answer.clone();
+    // 候选 = 与全部启用记录一致的组合,故"在候选中"等价于"与记录一致"
+    if cached.candidates.iter().any(|c| c == &full) {
+        if cached.candidates.len() == 1 {
+            ui.colored_label(
+                egui::Color32::from_rgb(102, 187, 106),
+                "答案成立,且是唯一可能——推理正确!",
+            );
+        } else {
+            ui.colored_label(
+                crate::gui::ACCENT,
+                format!(
+                    "答案与全部记录一致,但仍有 {} 个候选同样成立,未必正确",
+                    cached.candidates.len()
+                ),
+            );
+        }
+    } else {
+        ui.colored_label(egui::Color32::RED, "答案与记录矛盾(不在剩余候选中)");
     }
 }
