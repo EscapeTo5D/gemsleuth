@@ -109,14 +109,14 @@ pub fn show(
     ui.horizontal(|ui| {
         for slot in 0..session.settings.slots {
             if let Some(&g) = editor.slots.get(slot) {
-                if palette::gem_button(ui, assets, g)
+                if palette::gem_button_big(ui, assets, g)
                     .on_hover_text("点击清空此槽及之后")
                     .clicked()
                 {
                     editor.slots.truncate(slot);
                 }
             } else {
-                palette::empty_slot_button(ui);
+                palette::empty_slot_button_big(ui);
             }
         }
         ui.separator();
@@ -126,7 +126,7 @@ pub fn show(
     ui.horizontal(|ui| {
         ui.label("点击填入:");
         for color in 0..session.settings.colors as u8 {
-            if palette::gem_button(ui, assets, color).clicked()
+            if palette::gem_button_big(ui, assets, color).clicked()
                 && editor.slots.len() < session.settings.slots
             {
                 editor.slots.push(color);
@@ -188,21 +188,21 @@ fn answer_editor(
     ui.horizontal(|ui| {
         for slot in 0..session.settings.slots {
             if let Some(&g) = session.answer.get(slot) {
-                if palette::gem_button(ui, assets, g)
+                if palette::gem_button_big(ui, assets, g)
                     .on_hover_text("点击清空此槽及之后")
                     .clicked()
                 {
                     session.answer.truncate(slot);
                 }
             } else {
-                palette::empty_slot_button(ui);
+                palette::empty_slot_button_big(ui);
             }
         }
     });
     ui.horizontal(|ui| {
         ui.label("点击填入:");
         for color in 0..session.settings.colors as u8 {
-            if palette::gem_button(ui, assets, color).clicked()
+            if palette::gem_button_big(ui, assets, color).clicked()
                 && session.answer.len() < session.settings.slots
             {
                 session.answer.push(color);

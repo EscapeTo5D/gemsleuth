@@ -24,25 +24,30 @@ pub fn big_gem(ui: &mut egui::Ui, assets: &Assets, idx: u8) {
 /// 宝石磁贴按钮:32×32 图 + 2px 对称内边距 → 36×36,框紧贴宝石图。
 /// 全局 button_padding 为 (10,5),直接套 Button::image 会得到 52×42 的扁框,故局部覆盖。
 fn image_tile(ui: &mut egui::Ui, sized: egui::load::SizedTexture) -> egui::Response {
+    image_tile_pad(ui, sized, 2.0)
+}
+
+fn image_tile_pad(ui: &mut egui::Ui, sized: egui::load::SizedTexture, pad: f32) -> egui::Response {
     ui.scope(|ui| {
-        ui.spacing_mut().button_padding = egui::vec2(2.0, 2.0);
+        ui.spacing_mut().button_padding = egui::vec2(pad, pad);
         ui.add(egui::Button::image(sized))
     })
     .inner
 }
 
-pub fn gem_button(ui: &mut egui::Ui, assets: &Assets, idx: u8) -> egui::Response {
-    let sized = egui::load::SizedTexture::new(assets.gem(idx).id(), [32.0, 32.0]);
-    image_tile(ui, sized).on_hover_text(name(idx))
+/// 编辑区大号宝石磁贴:48×48 图 + 3px 内边距 → 54×54,录入主交互更大更好点。
+pub fn gem_button_big(ui: &mut egui::Ui, assets: &Assets, idx: u8) -> egui::Response {
+    let sized = egui::load::SizedTexture::new(assets.gem(idx).id(), [48.0, 48.0]);
+    image_tile_pad(ui, sized, 3.0).on_hover_text(name(idx))
 }
 
-/// 空槽位:与色盘宝石按钮同款磁贴(深色底/圆角/描边/悬停),内部空白不显示图标。
-pub fn empty_slot_button(ui: &mut egui::Ui) -> egui::Response {
+/// 编辑区大号空槽位:空白深色磁贴(深色底/圆角/描边/悬停),54×54,不显示图标。
+pub fn empty_slot_button_big(ui: &mut egui::Ui) -> egui::Response {
     ui.scope(|ui| {
-        ui.spacing_mut().button_padding = egui::vec2(2.0, 2.0);
+        ui.spacing_mut().button_padding = egui::vec2(3.0, 3.0);
         ui.add(
             egui::Button::new(egui::RichText::new(" ").size(10.0))
-                .min_size(egui::vec2(32.0, 32.0)),
+                .min_size(egui::vec2(48.0, 48.0)),
         )
     })
     .inner
@@ -96,12 +101,12 @@ pub fn marks_grid(ui: &mut egui::Ui, assets: &Assets, exact: u8, partial: u8, sl
     }
 }
 
-/// 可点反馈标:点击循环 问号→蓝标→金标,每行 2 枚,替代原数字计数输入。
+/// 可点反馈标:点击循环 问号→蓝标→金标,每行 2 枚 24×24,替代原数字计数输入。
 pub fn mark_cycle_buttons(ui: &mut egui::Ui, assets: &Assets, marks: &mut [u8]) {
     for chunk in marks.chunks_mut(2) {
         ui.horizontal(|ui| {
             for m in chunk {
-                let sized = egui::load::SizedTexture::new(mark_tex(assets, *m).id(), [20.0, 20.0]);
+                let sized = egui::load::SizedTexture::new(mark_tex(assets, *m).id(), [24.0, 24.0]);
                 let resp = image_tile(ui, sized);
                 if resp.on_hover_text(format!("{}(点击切换)", mark_tip(*m))).clicked() {
                     *m = (*m + 1) % 3;
