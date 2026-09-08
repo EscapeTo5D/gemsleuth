@@ -1,9 +1,12 @@
-//! 整卷求解结果区(§5.1):[求解] 按钮 + 三分支展示。
+//! 整卷求解结果区(§5.1):[求解] 按钮 + 三分支展示。候选分支与陪玩助手同款右栏常驻区。
 
 use eframe::egui;
 
 use crate::SolveOutcome;
-use crate::gui::{palette, primary_button, recommendation_row, suspects_row, Assets, MAX_ROUNDS, SessionState};
+use crate::gui::{
+    candidates_block, palette, primary_button, recommendation_row, suspects_row, Assets, MAX_ROUNDS,
+    SessionState,
+};
 
 pub fn show(
     ui: &mut egui::Ui,
@@ -12,6 +15,8 @@ pub fn show(
     outcome: &mut Option<SolveOutcome>,
     suspects: &[usize],
 ) {
+    // 候选块顶部锚点:面板入口处(紧贴记录区与结果区之间的分割线,而非标题下方)
+    let marks_top = ui.cursor().top();
     ui.heading("整卷求解");
     if primary_button(ui, "求解", egui::vec2(110.0, 34.0)).clicked() {
         *outcome = Some(crate::solve(&session.settings, &session.records));
@@ -34,28 +39,32 @@ pub fn show(
             suspects_row(ui, suspects);
         }
         SolveOutcome::Ambiguous { candidates, recommendation } => {
-            ui.strong(format!("共 {} 个候选:", candidates.len()));
-            if candidates.len() > 50 {
-                ui.label(egui::RichText::new("(超过 50 个,折叠为计数;继续录入记录或按推荐消歧)").weak());
-            } else {
-                egui::ScrollArea::vertical()
-                    .id_salt("solve_candidates")
-                    .max_height(220.0)
-                    .show(ui, |ui| {
-                        for c in candidates {
-                            ui.horizontal(|ui| {
-                                for &g in c {
-                                    palette::small_gem(ui, assets, g);
-                                }
-                            });
-                        }
-                    });
-            }
+            // 左栏(推荐)走常规纵向流;候选块用显式矩形贴右(理由同 assistant_panel)
+            // 候选块占右半窗:左缘贴窗口中央分割线
+            let right_w = ui.available_width() * 0.5;
+            let rect = egui::Rect::from_min_max(
+                egui::pos2(ui.max_rect().right() - right_w, marks_top),
+                egui::pos2(ui.max_rect().right(), ui.max_rect().bottom()),
+            );
             if session.records.len() >= MAX_ROUNDS {
                 ui.label(egui::RichText::new("猜测轮次已用完:请在上方提交最终答案").weak());
             } else {
                 recommendation_row(ui, assets, recommendation);
             }
+            ui.scope_builder(
+                egui::UiBuilder::new()
+                    .max_rect(rect)
+                    .layout(egui::Layout::top_down(egui::Align::LEFT)),
+                |ui| {
+                    candidates_block(
+                        ui,
+                        assets,
+                        candidates,
+                        &format!("共 {} 个候选:", candidates.len()),
+                        "solve_candidates",
+                    );
+                },
+            );
         }
     }
 }

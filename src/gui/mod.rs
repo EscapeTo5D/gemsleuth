@@ -160,33 +160,78 @@ fn customize_visuals(ctx: &egui::Context) {
     });
 }
 
-/// 推荐猜测展示行(两结果面板共用,§5.1)。标签独立成行,宝石与备注另起一行。
+/// 推荐猜测展示行(两结果面板共用,§5.1)。标签独立成行,宝石一行,备注文字另起一行(窄栏不挤压)。
 pub fn recommendation_row(ui: &mut egui::Ui, assets: &Assets, rec: &Recommendation) {
     ui.strong("推荐下一猜:");
-    ui.horizontal(|ui| {
-        match rec {
-            Recommendation::Answer(ans) => {
+    match rec {
+        Recommendation::Answer(ans) => {
+            ui.horizontal(|ui| {
                 for &g in ans {
                     palette::big_gem(ui, assets, g);
                 }
-            }
-            Recommendation::Guess { guess, bound } => {
+            });
+        }
+        Recommendation::Guess { guess, bound } => {
+            ui.horizontal(|ui| {
                 for &g in guess {
                     palette::big_gem(ui, assets, g);
                 }
-                match bound {
-                    Bound::GuaranteedSteps(n) => {
-                        ui.label(egui::RichText::new(format!("(精确前瞻:最多还需 {n} 步)")).weak());
-                    }
-                    Bound::Expected { entropy_bits, worst_bucket } => {
-                        ui.label(egui::RichText::new(format!(
-                            "(熵推荐:期望信息量 {entropy_bits:.2} 比特,最坏情况剩 {worst_bucket} 个)"
-                        )).weak());
-                    }
-                }
-            }
+            });
+            let note = match bound {
+                Bound::GuaranteedSteps(n) => format!("(精确前瞻:最多还需 {n} 步)"),
+                Bound::Expected { entropy_bits, worst_bucket } => format!(
+                    "(熵推荐:期望信息量 {entropy_bits:.2} 比特,最坏情况剩 {worst_bucket} 个)"
+                ),
+            };
+            ui.label(egui::RichText::new(note).weak());
         }
-    });
+    }
+}
+
+/// 计算出的候选常驻块(两结果面板共用):占据调用方给的矩形(窗口右半),
+/// 左缘即窗口中央分割线(绘制一条竖线),内容从分割线起排;
+/// 候选单列滚动、一行一条,宝石随栏宽放大铺满一行;高度随窗口自适应——
+/// 内容少时收缩,内容多时撑满剩余空间再滚动;超过 50 个只列前 50 并提示剩余。
+pub fn candidates_block(
+    ui: &mut egui::Ui,
+    assets: &Assets,
+    candidates: &[Vec<u8>],
+    title: &str,
+    id_salt: &str,
+) {
+    // 左缘竖直分割线(窗口中央)
+    let r = ui.max_rect();
+    ui.painter().line_segment(
+        [egui::pos2(r.left(), r.top()), egui::pos2(r.left(), r.bottom())],
+        egui::Stroke::new(1.0, egui::Color32::from_gray(70)),
+    );
+    ui.strong(title);
+    let max_h = ui.available_height().max(160.0);
+    egui::ScrollArea::vertical()
+        .id_salt(id_salt)
+        .max_height(max_h)
+        .auto_shrink([false, true])
+        .show(ui, |ui| {
+            let slots = (candidates.first().map(Vec::len).unwrap_or(0) as f32).max(1.0);
+            let gap = ui.spacing().item_spacing.x;
+            let avail = (ui.available_width() - 14.0).max(0.0); // 留出滚动条余量
+            // 宝石尺寸随栏宽自适应,上限与推荐行的大号宝石一致(64)
+            let gem = (((avail - (slots - 1.0) * gap) / slots).floor()).clamp(32.0, 64.0);
+            let shown = &candidates[..candidates.len().min(50)];
+            for c in shown {
+                ui.horizontal(|ui| {
+                    for &g in c {
+                        palette::gem_sized(ui, assets, g, gem);
+                    }
+                });
+            }
+            if candidates.len() > 50 {
+                ui.label(egui::RichText::new(format!(
+                    "(还有 {} 个未显示,继续录入记录可缩小范围)",
+                    candidates.len() - 50
+                )).weak());
+            }
+        });
 }
 
 /// 矛盾时的嫌疑记录提示行(两结果面板共用)。
