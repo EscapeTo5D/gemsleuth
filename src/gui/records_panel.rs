@@ -122,9 +122,9 @@ pub fn show(
         ui.separator();
         palette::mark_cycle_buttons(ui, assets, &mut editor.marks);
     });
-    // 点击色盘依次填入空槽
+    // 点击色盘依次填入空槽(标签独立一行,色盘另起一行)
+    ui.label("点击填入:");
     ui.horizontal(|ui| {
-        ui.label("点击填入:");
         for color in 0..session.settings.colors as u8 {
             if palette::gem_button_big(ui, assets, color).clicked()
                 && editor.slots.len() < session.settings.slots
@@ -199,8 +199,8 @@ fn answer_editor(
             }
         }
     });
+    ui.label("点击填入:");
     ui.horizontal(|ui| {
-        ui.label("点击填入:");
         for color in 0..session.settings.colors as u8 {
             if palette::gem_button_big(ui, assets, color).clicked()
                 && session.answer.len() < session.settings.slots
