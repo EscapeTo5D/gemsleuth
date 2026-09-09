@@ -10,9 +10,12 @@ use crate::core::strategy::{recommend_for, Recommendation};
 /// 枚举全部可能答案(§4.3 第 1 步)。
 /// repeats=true → colors^slots 个,里程表序(末位变化最快,即 itertools.product 序);
 /// repeats=false → 无重复全排列 P(colors, slots),字典序。
-/// 要求 settings 已通过 validate(debug_assert)。
+/// 要求 settings 结构有效(颜色/槽位为正,不允许重复时槽位不超过颜色,debug_assert);
+/// 4..=8 的产品范围校验由 Settings::validate 负责,测试可用更小的空间。
 pub fn enumerate_space(settings: &Settings) -> Vec<Vec<u8>> {
-    debug_assert!(settings.validate().is_ok());
+    debug_assert!(settings.colors >= 1
+        && settings.slots >= 1
+        && (settings.repeats || settings.slots <= settings.colors));
     let colors = settings.colors;
     let slots = settings.slots;
     let mut out = Vec::new();

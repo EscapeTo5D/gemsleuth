@@ -363,18 +363,26 @@ mod layout_tests {
         let output = ctx.run_ui(egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)), events, ..Default::default()
         }, |ui| app.show_workspace(ui));
-        for shape in &output.shapes {
-            if let egui::Shape::Mesh(mesh) = &shape.shape {
+        let half = size.x / 2.0;
+        let crossing = output.shapes.iter().filter_map(|shape| match &shape.shape {
+            egui::Shape::Mesh(mesh) => {
                 let min_x = mesh.vertices.iter().map(|v| v.pos.x).fold(f32::INFINITY, f32::min);
                 let max_x = mesh.vertices.iter().map(|v| v.pos.x).fold(f32::NEG_INFINITY, f32::max);
-                assert!(min_x >= size.x / 2.0 || max_x <= size.x / 2.0,
-                    "Image crosses the column divider: {min_x}..{max_x}, width {}", size.x);
+                (min_x < half && max_x > half).then_some((min_x, max_x))
             }
-        }
-        output.shapes.iter().filter_map(|shape| match &shape.shape {
+            _ => None,
+        }).next();
+        let texts: Vec<_> = output.shapes.iter().filter_map(|shape| match &shape.shape {
             egui::Shape::Text(text) => Some((text.galley.job.text.clone(), text.galley.rect.translate(text.pos.to_vec2()))),
             _ => None,
-        }).collect()
+        }).collect();
+        // 测试不做真实渲染,egui 0.36 要求显式丢弃纹理增量,否则 Context drop 时 panic;
+        // 先丢弃再断言,断言失败时不会被二次 panic 掩盖
+        output.drop_without_applying_deltas();
+        if let Some((min_x, max_x)) = crossing {
+            panic!("Image crosses the column divider: {min_x}..{max_x}, width {}", size.x);
+        }
+        texts
     }
 
     fn find(texts: &[(String, egui::Rect)], prefix: &str) -> egui::Rect {
@@ -466,6 +474,8 @@ mod layout_tests {
             }
             _ => None,
         }).unwrap();
+        // 测试不做真实渲染,egui 0.36 要求显式丢弃纹理增量,否则 Context drop 时 panic
+        output.drop_without_applying_deltas();
         assert!((number - gem).abs() <= 2.0, "number {number}, gem {gem}");
     }
 
