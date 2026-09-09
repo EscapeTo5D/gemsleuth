@@ -15,9 +15,11 @@ use crate::core::strategy::{
     recommend_quick_for_cancellable, recommendation_evidence,
 };
 use crate::{Recommendation, Record, Settings};
+use crate::core::policy::StrategyMode;
 
 #[derive(Clone, Default)]
 pub struct CachedAnalysis {
+    pub policy_mode: Option<StrategyMode>,
     /// false 代表尚未过滤新记录,不能把空 candidates 当成矛盾。
     pub ready: bool,
     pub candidates: Vec<Vec<u8>>,
@@ -47,6 +49,7 @@ struct Update {
 
 #[derive(Default)]
 pub struct AnalysisController {
+    pub mode: StrategyMode,
     pub cached: CachedAnalysis,
     pub phase: AnalysisPhase,
     pub error: Option<String>,
@@ -94,12 +97,13 @@ impl AnalysisController {
         let (tx, rx) = mpsc::channel();
         self.rx = Some(rx);
         let wake = ctx.clone();
+        let mode = self.mode;
         let spawned = std::thread::Builder::new()
             .name("analysis".into())
             .spawn(move || {
                 // 即使算法意外 panic 也唤醒界面,由断开的 channel 转为可重试失败态。
                 let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    run_analysis(settings, records, &cancelled, |cached, phase| {
+                    run_analysis_with_mode(settings, records, &cancelled, mode, |cached, phase| {
                         let sent = tx
                             .send(Update {
                                 generation,
@@ -168,10 +172,21 @@ impl Drop for AnalysisController {
     }
 }
 
+#[cfg(test)]
 fn run_analysis(
     settings: Settings,
     records: Vec<Record>,
     cancelled: &AtomicBool,
+    publish: impl FnMut(CachedAnalysis, AnalysisPhase) -> bool,
+) {
+    run_analysis_with_mode(settings, records, cancelled, StrategyMode::Average, publish);
+}
+
+fn run_analysis_with_mode(
+    settings: Settings,
+    records: Vec<Record>,
+    cancelled: &AtomicBool,
+    mode: StrategyMode,
     mut publish: impl FnMut(CachedAnalysis, AnalysisPhase) -> bool,
 ) {
     if cancelled.load(Ordering::Relaxed) {
@@ -200,6 +215,15 @@ fn run_analysis(
         return;
     }
     if !publish(cached.clone(), AnalysisPhase::Recommending) || cancelled.load(Ordering::Relaxed) {
+        return;
+    }
+    if let Some(recommendation) = crate::core::policy::lookup_mode(&settings, &cached.candidates, mode) {
+        cached.policy_mode = Some(mode);
+        cached.evidence = Some(recommendation_evidence(&settings, &cached.candidates, &recommendation));
+        cached.recommendation = Some(recommendation);
+        if !cancelled.load(Ordering::Relaxed) {
+            publish(cached, AnalysisPhase::Complete);
+        }
         return;
     }
     let Some(quick) = recommend_quick_for_cancellable(&settings, &cached.candidates, cancelled)

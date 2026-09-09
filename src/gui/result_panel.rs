@@ -159,6 +159,17 @@ pub fn show(
         return;
     }
 
+    if analysis.cached.candidates.len() > 1 && analysis.cached.recommendation.is_some() {
+        let description = match analysis.cached.policy_mode {
+            Some(crate::core::policy::StrategyMode::Average) => "已证明平均最优：开局平均 4.340 次，最坏 6 次。",
+            Some(crate::core::policy::StrategyMode::Worst) => "完整开局实测：平均 4.476 次，最坏 5 次。",
+            None => "当前局面未覆盖预计算策略，采用实时分析。",
+        };
+        ui.label(egui::RichText::new(description).weak()).on_hover_text(
+            "成绩按六色四槽、允许重复的 1296 个答案等可能、从开局持续采用同一策略且反馈准确计算，包含最终猜中答案的提交。平均策略已通过精确搜索证明总成本最小为 5625；最坏优先策略的成绩来自全量模拟。中途切换不沿用开局成绩；当前局面的保证见下方。"
+        );
+    }
+
     match analysis.cached.candidates.len() {
         0 => {
             ui.colored_label(egui::Color32::RED, "记录矛盾：没有符合全部启用记录的答案。");

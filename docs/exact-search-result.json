@@ -1,0 +1,11 @@
+{
+  "answers": 1296,
+  "lower_total": 5625,
+  "upper_total": 5625,
+  "average": 4.340277778,
+  "worst": 6,
+  "proven_optimal": true,
+  "finished_search": true,
+  "elapsed_seconds": 95.722,
+  "states": 1793042
+}

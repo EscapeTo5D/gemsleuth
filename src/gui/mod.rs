@@ -116,6 +116,19 @@ impl GemsleuthApp {
                 records_panel::show_editor(ui, &self.assets, &mut self.session, &mut self.editor, &self.analysis.cached, &mut self.dirty);
                 self.refresh_if_dirty(ui.ctx());
                 ui.separator();
+                let previous_mode = self.analysis.mode;
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("推荐策略：");
+                    ui.add_enabled_ui(self.session.records.is_empty(), |ui| {
+                        ui.selectable_value(&mut self.analysis.mode, crate::core::policy::StrategyMode::Average, "平均次数最少")
+                            .on_disabled_hover_text("本局策略已锁定，清空全部记录后可切换");
+                        ui.selectable_value(&mut self.analysis.mode, crate::core::policy::StrategyMode::Worst, "最坏次数更少")
+                            .on_disabled_hover_text("本局策略已锁定，清空全部记录后可切换");
+                    });
+                });
+                if previous_mode != self.analysis.mode {
+                    self.analysis.request(self.session.settings, self.session.records.clone(), ui.ctx());
+                }
                 if self.analysis.phase == analysis::AnalysisPhase::Failed && ui.button("重新分析").clicked() {
                     self.analysis.request(self.session.settings, self.session.records.clone(), ui.ctx());
                 }
@@ -474,6 +487,27 @@ mod layout_tests {
             }
             assert_eq!(app.session.records.len(), expected);
         }
+    }
+
+    #[test]
+    fn switching_strategy_invalidates_the_previous_recommendation() {
+        let ctx = egui::Context::default();
+        let mut app = fixture(&ctx, 0);
+        app.analysis.cached.recommendation = Some(crate::Recommendation::Guess {
+            guess: vec![0,1,2,3], bound: crate::Bound::GuaranteedSteps(6),
+        });
+        let size = egui::vec2(1000.0, 700.0);
+        let texts = render(&mut app, &ctx, size, vec![]);
+        let pos = find(&texts, "最坏次数更少").center();
+        for pressed in [true, false] {
+            render(&mut app, &ctx, size, vec![egui::Event::PointerMoved(pos), egui::Event::PointerButton {
+                pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::default(),
+            }]);
+        }
+        assert_eq!(app.analysis.mode, crate::core::policy::StrategyMode::Worst);
+        assert!(app.analysis.cached.recommendation.is_none());
+        assert!(!app.analysis.cached.ready);
+        assert!(app.analysis.is_running());
     }
 
     #[test]
