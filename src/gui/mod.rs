@@ -1,18 +1,22 @@
-//! egui 薄壳:会话状态、脏标记重算、设置栏、Tab 切换(§5)。
+//! egui 薄壳:会话状态、分阶段后台分析、Tab 切换。
 
 use eframe::egui;
 
-use crate::{Bound, Record, Recommendation, Settings, SolveOutcome};
+use crate::{Record, Settings};
 
 use records_panel::RecordEditor;
 
 pub mod assistant_panel;
+pub mod analysis;
+pub mod result_panel;
 pub mod palette;
 pub mod records_panel;
 pub mod solve_panel;
 pub mod assets;
 
 pub use assets::Assets;
+pub use analysis::CachedAnalysis;
+use analysis::AnalysisController;
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Tab { Assistant, Solve }
@@ -40,43 +44,15 @@ impl Default for SessionState {
     }
 }
 
-#[derive(Default)]
-pub struct CachedAnalysis {
-    pub candidates: Vec<Vec<u8>>,
-    pub recommendation: Option<Recommendation>, // 候选空时为 None
-    pub suspects: Vec<usize>,                   // 矛盾时的嫌疑记录下标
-}
-
 pub struct GemsleuthApp {
     pub session: SessionState,
     pub tab: Tab,
     pub dirty: bool,                        // 任一会话变更 → 重算
-    pub cached: CachedAnalysis,
-    /// 后台重算状态:脏标记只发请求,计算在独立线程完成经 channel 送回,
-    /// 期间 UI 持续用上一份 cached 渲染(显示"计算中"),不再整帧卡死。
-    pub compute_gen: u64,                                        // 最新任务代号
-    pub compute_rx: Option<std::sync::mpsc::Receiver<(u64, CachedAnalysis)>>,
-    pub computing: bool,                   // 最新代号的任务尚未返回
-    pub compute_pending: bool,             // 任务执行期间又有变更,收割后需补算
-    pub solve_outcome: Option<SolveOutcome>, // 整卷求解快照(点击求解时更新)
+    pub analysis: AnalysisController,
+    pub solve_requested: bool,
     pub font_warning: bool,
     pub assets: Assets,
     pub editor: RecordEditor,
-}
-
-/// 由会话快照计算完整分析(过滤 + 推荐/嫌疑)。UI 线程启动时与后台线程共用。
-fn compute_cached(session: &SessionState) -> CachedAnalysis {
-    compute_cached_from(session.settings, session.records.clone())
-}
-
-fn compute_cached_from(settings: crate::Settings, records: Vec<crate::Record>) -> CachedAnalysis {
-    let candidates = crate::filter_candidates(&settings, &records);
-    let (recommendation, suspects) = if candidates.is_empty() {
-        (None, crate::suspect_records(&settings, &records))
-    } else {
-        (Some(crate::core::strategy::recommend_for(&settings, &candidates)), vec![])
-    };
-    CachedAnalysis { candidates, recommendation, suspects }
 }
 
 impl GemsleuthApp {
@@ -84,22 +60,90 @@ impl GemsleuthApp {
         let font_warning = !install_cjk_fonts(&cc.egui_ctx);
         customize_visuals(&cc.egui_ctx);
         let session = SessionState::default();
-        // 启动时记录为空,计算毫秒级,直接同步出首帧数据
-        let cached = compute_cached(&session);
+        let mut analysis = AnalysisController::default();
+        analysis.request(session.settings, session.records.clone(), &cc.egui_ctx);
         Self {
             session,
             tab: Tab::Assistant,
             dirty: false,
-            cached,
-            compute_gen: 0,
-            compute_rx: None,
-            computing: false,
-            compute_pending: false,
-            solve_outcome: None,
+            analysis,
+            solve_requested: false,
             font_warning,
             assets: Assets::load(&cc.egui_ctx),
             editor: RecordEditor::default(),
         }
+    }
+
+    fn refresh_if_dirty(&mut self, ctx: &egui::Context) {
+        if std::mem::take(&mut self.dirty) {
+            self.solve_requested = false;
+            self.analysis.request(self.session.settings, self.session.records.clone(), ctx);
+        }
+    }
+
+    fn show_workspace(&mut self, ui: &mut egui::Ui) {
+        let full = ui.available_rect_before_wrap();
+        let center = full.center().x;
+        let gap = ui.spacing().item_spacing.x;
+        let left_rect = egui::Rect::from_min_max(full.min, egui::pos2(center - gap, full.bottom()));
+        let right_rect = egui::Rect::from_min_max(egui::pos2(center + gap, full.top()), full.max);
+        // 只预留标题和六条记录的高度;窗口变高时把新增空间留给候选。
+        let history_height = ui.text_style_height(&egui::TextStyle::Heading)
+            + ui.spacing().item_spacing.y
+            + MAX_ROUNDS as f32 * records_panel::HISTORY_ROW_HEIGHT
+            + (MAX_ROUNDS - 1) as f32 * ui.spacing().item_spacing.y;
+        let history_rect = egui::Rect::from_min_max(right_rect.min,
+            egui::pos2(right_rect.right(), full.top() + history_height.min(full.height().max(0.0))));
+        ui.painter().line_segment(
+            [egui::pos2(center, full.top()), egui::pos2(center, full.bottom())],
+            egui::Stroke::new(1.0, egui::Color32::from_gray(70)),
+        );
+
+        // 先处理右侧历史记录操作,编辑选择能在本帧反映到左侧录入区。
+        let mut history = ui.new_child(egui::UiBuilder::new()
+            .id_salt("history_panel").max_rect(history_rect)
+            .layout(egui::Layout::top_down(egui::Align::LEFT)));
+        records_panel::show_history(&mut history, &self.assets, &mut self.session, &mut self.editor, &mut self.dirty);
+        let candidates_top = history_rect.bottom();
+        self.refresh_if_dirty(ui.ctx());
+
+        let mut left = ui.new_child(egui::UiBuilder::new()
+            .id_salt("input_and_recommendation").max_rect(left_rect)
+            .layout(egui::Layout::top_down(egui::Align::LEFT)));
+        egui::ScrollArea::vertical().id_salt("left_workspace_scroll")
+            .max_height(left_rect.height().max(0.0)).auto_shrink([false, false])
+            .show(&mut left, |ui| {
+                records_panel::show_editor(ui, &self.assets, &mut self.session, &mut self.editor, &self.analysis.cached, &mut self.dirty);
+                self.refresh_if_dirty(ui.ctx());
+                ui.separator();
+                if self.analysis.phase == analysis::AnalysisPhase::Failed && ui.button("重新分析").clicked() {
+                    self.analysis.request(self.session.settings, self.session.records.clone(), ui.ctx());
+                }
+                match self.tab {
+                    Tab::Assistant => assistant_panel::show(ui, &self.assets, &mut self.session, &mut self.editor, &mut self.dirty, &self.analysis),
+                    Tab::Solve => solve_panel::show(ui, &self.assets, &self.session, &mut self.solve_requested, &self.analysis),
+                }
+                self.refresh_if_dirty(ui.ctx());
+            });
+
+        let candidates_rect = egui::Rect::from_min_max(
+            egui::pos2(right_rect.left(), candidates_top.min(full.bottom())), right_rect.max);
+        let mut candidates_ui = ui.new_child(egui::UiBuilder::new()
+            .id_salt("candidates_panel").max_rect(candidates_rect)
+            .layout(egui::Layout::top_down(egui::Align::LEFT)));
+        candidates_ui.separator();
+        if self.tab == Tab::Solve && !self.solve_requested {
+            candidates_ui.strong("候选列表");
+            candidates_ui.label("点击左侧「求解」查看候选");
+        } else if !self.analysis.cached.ready {
+            candidates_ui.strong("候选列表");
+            candidates_ui.label("正在核对最新记录…");
+        } else {
+            let count = self.analysis.cached.candidates.len();
+            candidates_block(&mut candidates_ui, &self.assets, &self.analysis.cached.candidates,
+                &format!("剩余候选 {count} 个（枚举顺序，不代表概率排名）"), "workspace_candidates");
+        }
+        ui.advance_cursor_after_rect(full);
     }
 }
 
@@ -160,38 +204,10 @@ fn customize_visuals(ctx: &egui::Context) {
     });
 }
 
-/// 推荐猜测展示行(两结果面板共用,§5.1)。标签独立成行,宝石一行,备注文字另起一行(窄栏不挤压)。
-pub fn recommendation_row(ui: &mut egui::Ui, assets: &Assets, rec: &Recommendation) {
-    ui.strong("推荐下一猜:");
-    match rec {
-        Recommendation::Answer(ans) => {
-            ui.horizontal(|ui| {
-                for &g in ans {
-                    palette::big_gem(ui, assets, g);
-                }
-            });
-        }
-        Recommendation::Guess { guess, bound } => {
-            ui.horizontal(|ui| {
-                for &g in guess {
-                    palette::big_gem(ui, assets, g);
-                }
-            });
-            let note = match bound {
-                Bound::GuaranteedSteps(n) => format!("(精确前瞻:最多还需 {n} 步)"),
-                Bound::Expected { entropy_bits, worst_bucket } => format!(
-                    "(熵推荐:期望信息量 {entropy_bits:.2} 比特,最坏情况剩 {worst_bucket} 个)"
-                ),
-            };
-            ui.label(egui::RichText::new(note).weak());
-        }
-    }
-}
-
 /// 计算出的候选常驻块(两结果面板共用):占据调用方给的矩形(窗口右半),
 /// 左缘即窗口中央分割线(绘制一条竖线),内容从分割线起排;
 /// 候选单列滚动、一行一条,宝石随栏宽放大铺满一行;高度随窗口自适应——
-/// 内容少时收缩,内容多时撑满剩余空间再滚动;超过 50 个只列前 50 并提示剩余。
+/// 内容少时收缩,内容多时撑满剩余空间再滚动;超过 10 个只列前 10 并提示剩余。
 pub fn candidates_block(
     ui: &mut egui::Ui,
     assets: &Assets,
@@ -199,14 +215,8 @@ pub fn candidates_block(
     title: &str,
     id_salt: &str,
 ) {
-    // 左缘竖直分割线(窗口中央)
-    let r = ui.max_rect();
-    ui.painter().line_segment(
-        [egui::pos2(r.left(), r.top()), egui::pos2(r.left(), r.bottom())],
-        egui::Stroke::new(1.0, egui::Color32::from_gray(70)),
-    );
     ui.strong(title);
-    let max_h = ui.available_height().max(160.0);
+    let max_h = ui.available_height().max(0.0);
     egui::ScrollArea::vertical()
         .id_salt(id_salt)
         .max_height(max_h)
@@ -217,7 +227,7 @@ pub fn candidates_block(
             let avail = (ui.available_width() - 14.0).max(0.0); // 留出滚动条余量
             // 宝石尺寸随栏宽自适应,上限与推荐行的大号宝石一致(64)
             let gem = (((avail - (slots - 1.0) * gap) / slots).floor()).clamp(32.0, 64.0);
-            let shown = &candidates[..candidates.len().min(50)];
+            let shown = &candidates[..candidates.len().min(10)];
             for c in shown {
                 ui.horizontal(|ui| {
                     for &g in c {
@@ -225,10 +235,10 @@ pub fn candidates_block(
                     }
                 });
             }
-            if candidates.len() > 50 {
+            if candidates.len() > 10 {
                 ui.label(egui::RichText::new(format!(
                     "(还有 {} 个未显示,继续录入记录可缩小范围)",
-                    candidates.len() - 50
+                    candidates.len() - 10
                 )).weak());
             }
         });
@@ -283,47 +293,12 @@ fn paint_background(ui: &mut egui::Ui, assets: &Assets) {
 
 impl eframe::App for GemsleuthApp {
     /// 每帧 UI 前调用,禁止阻塞——收割后台计算结果、按需派发新任务(§5.1 实时刷新)。
-    fn logic(&mut self, _ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // 收割已完成的任务;只采纳最新代号,过期结果直接丢弃
-        if let Some(rx) = &self.compute_rx {
-            while let Ok((job_gen, result)) = rx.try_recv() {
-                if job_gen == self.compute_gen {
-                    self.cached = result;
-                    self.computing = false;
-                }
-            }
-        }
-        if !self.computing && self.compute_pending {
-            // 在跑的任务已收尾且期间有变更 → 对最新状态补算
-            self.compute_pending = false;
-            self.dirty = true;
-        }
-        if !self.dirty {
-            return;
-        }
-        if self.computing {
-            // 任务执行期间又有变更:合并请求,收割后再对最新状态补算
-            self.compute_pending = true;
-            return;
-        }
-        self.dirty = false;
-        self.compute_gen += 1;
-        let job_gen = self.compute_gen;
-        let settings = self.session.settings;
-        let records = self.session.records.clone();
-        let (tx, rx) = std::sync::mpsc::channel();
-        self.compute_rx = Some(rx);
-        self.computing = true;
-        std::thread::Builder::new()
-            .name("recompute".into())
-            .spawn(move || {
-                let analysis = compute_cached_from(settings, records);
-                let _ = tx.send((job_gen, analysis));
-            })
-            .expect("spawn recompute thread");
-        // 任务在跑期间保持低间隔轮询收割,否则空闲时无输入事件不会出新帧
-        if self.computing {
-            _ctx.request_repaint_after(std::time::Duration::from_millis(8));
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.refresh_if_dirty(ctx);
+        self.analysis.poll();
+        if self.analysis.is_running() {
+            // 结果到达主动唤醒;此周期只更新实际等待时长,不需 8ms 忙轮询。
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
     }
 
@@ -347,35 +322,175 @@ impl eframe::App for GemsleuthApp {
                 }
             });
             ui.add_space(4.0);
-            records_panel::show(
-                ui,
-                &self.assets,
-                &mut self.session,
-                &mut self.editor,
-                &self.cached,
-                &mut self.dirty,
-            );
-            ui.separator();
-            match self.tab {
-                Tab::Assistant => {
-                    assistant_panel::show(
-                        ui,
-                        &self.assets,
-                        &mut self.session,
-                        &mut self.editor,
-                        &mut self.dirty,
-                        &self.cached,
-                        self.computing,
-                    )
-                }
-                Tab::Solve => solve_panel::show(
-                    ui,
-                    &self.assets,
-                    &self.session,
-                    &mut self.solve_outcome,
-                    &self.cached.suspects,
-                ),
-            }
+            self.show_workspace(ui);
         });
+    }
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+
+    fn fixture(ctx: &egui::Context, count: usize) -> GemsleuthApp {
+        install_cjk_fonts(ctx);
+        customize_visuals(ctx);
+        let mut session = SessionState::default();
+        session.records = vec![Record::new(vec![0, 1, 2, 3], 1, 0); count];
+        let mut analysis = AnalysisController::default();
+        analysis.phase = analysis::AnalysisPhase::Complete;
+        analysis.cached.ready = true;
+        analysis.cached.candidates = crate::enumerate_space(&session.settings)[..50].to_vec();
+        analysis.cached.active_records = count;
+        analysis.cached.total_records = count;
+        GemsleuthApp { session, analysis, tab: Tab::Assistant, dirty: false, solve_requested: false,
+            font_warning: false, assets: Assets::load(ctx), editor: RecordEditor::default() }
+    }
+
+    fn render(app: &mut GemsleuthApp, ctx: &egui::Context, size: egui::Vec2, events: Vec<egui::Event>) -> Vec<(String, egui::Rect)> {
+        let output = ctx.run_ui(egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)), events, ..Default::default()
+        }, |ui| app.show_workspace(ui));
+        for shape in &output.shapes {
+            if let egui::Shape::Mesh(mesh) = &shape.shape {
+                let min_x = mesh.vertices.iter().map(|v| v.pos.x).fold(f32::INFINITY, f32::min);
+                let max_x = mesh.vertices.iter().map(|v| v.pos.x).fold(f32::NEG_INFINITY, f32::max);
+                assert!(min_x >= size.x / 2.0 || max_x <= size.x / 2.0,
+                    "Image crosses the column divider: {min_x}..{max_x}, width {}", size.x);
+            }
+        }
+        output.shapes.iter().filter_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) => Some((text.galley.job.text.clone(), text.galley.rect.translate(text.pos.to_vec2()))),
+            _ => None,
+        }).collect()
+    }
+
+    fn find(texts: &[(String, egui::Rect)], prefix: &str) -> egui::Rect {
+        texts.iter().find(|(text, _)| text.starts_with(prefix)).unwrap_or_else(|| panic!("Missing {prefix}")).1
+    }
+
+    #[test]
+    fn history_is_top_right_candidates_below_and_input_left_at_both_window_sizes() {
+        for size in [egui::vec2(1000.0, 700.0), egui::vec2(700.0, 500.0)] {
+            let ctx = egui::Context::default();
+            let mut app = fixture(&ctx, 5);
+            let texts = render(&mut app, &ctx, size, vec![]);
+            let history = find(&texts, "历史记录");
+            let input = find(&texts, "新增记录");
+            let candidates = find(&texts, "剩余候选");
+            assert!(history.left() >= size.x / 2.0);
+            assert!(input.right() < size.x / 2.0);
+            assert!((history.top() - input.top()).abs() < 12.0);
+            assert!(candidates.top() > history.bottom());
+            assert!(candidates.bottom() < size.y);
+            let delete = find(&texts, "删除");
+            assert!(delete.right() < size.x);
+        }
+    }
+
+    #[test]
+    fn more_history_does_not_push_the_left_recommendation_down() {
+        let mut positions = Vec::new();
+        for count in [1, 5] {
+            let ctx = egui::Context::default();
+            let mut app = fixture(&ctx, count);
+            let texts = render(&mut app, &ctx, egui::vec2(1000.0, 700.0), vec![]);
+            positions.push(find(&texts, "分析完成").top());
+        }
+        assert!((positions[0] - positions[1]).abs() < 1.0, "{positions:?}");
+    }
+
+    #[test]
+    fn empty_history_reserves_the_same_space_as_a_full_history() {
+        for size in [egui::vec2(1000.0, 700.0), egui::vec2(700.0, 500.0)] {
+            let mut tops = Vec::new();
+            for count in [0, 1, MAX_ROUNDS] {
+                let ctx = egui::Context::default();
+                let mut app = fixture(&ctx, count);
+                let texts = render(&mut app, &ctx, size, vec![]);
+                tops.push(find(&texts, "剩余候选").top());
+            }
+            assert!(tops.iter().all(|top| (top - tops[0]).abs() < 1.0), "{tops:?}");
+            assert!(tops[0] >= MAX_ROUNDS as f32 * records_panel::HISTORY_ROW_HEIGHT);
+        }
+    }
+
+    #[test]
+    fn taller_windows_give_extra_space_to_candidates_not_history() {
+        let mut tops = Vec::new();
+        for height in [700.0, 1000.0] {
+            let ctx = egui::Context::default();
+            let mut app = fixture(&ctx, MAX_ROUNDS);
+            let texts = render(&mut app, &ctx, egui::vec2(1000.0, height), vec![]);
+            let candidates = find(&texts, "剩余候选");
+            let last_record = find(&texts, "6.");
+            assert!(last_record.bottom() < candidates.top());
+            assert!(candidates.top() - last_record.center().y < 64.0);
+            tops.push(candidates.top());
+        }
+        assert!((tops[0] - tops[1]).abs() < 1.0, "{tops:?}");
+    }
+
+    #[test]
+    fn history_number_is_vertically_centered_with_the_large_gems() {
+        let ctx = egui::Context::default();
+        let mut app = fixture(&ctx, 1);
+        let output = ctx.run_ui(egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 700.0))),
+            ..Default::default()
+        }, |ui| app.show_workspace(ui));
+        let number = output.shapes.iter().find_map(|shape| match &shape.shape {
+            egui::Shape::Text(text) if text.galley.job.text == "1." => Some(text.pos.y + text.galley.rect.center().y),
+            _ => None,
+        }).unwrap();
+        let gem = output.shapes.iter().find_map(|shape| match &shape.shape {
+            egui::Shape::Rect(rect) if rect.fill_texture_id() == app.assets.gem(0).id()
+                && rect.rect.left() > 500.0 => Some(rect.rect.center().y),
+            egui::Shape::Mesh(mesh) if mesh.texture_id == app.assets.gem(0).id()
+                && mesh.vertices.iter().all(|v| v.pos.x > 500.0) => {
+                let top = mesh.vertices.iter().map(|v| v.pos.y).fold(f32::INFINITY, f32::min);
+                let bottom = mesh.vertices.iter().map(|v| v.pos.y).fold(f32::NEG_INFINITY, f32::max);
+                Some((top + bottom) / 2.0)
+            }
+            _ => None,
+        }).unwrap();
+        assert!((number - gem).abs() <= 2.0, "number {number}, gem {gem}");
+    }
+
+    #[test]
+    fn add_record_stays_visible_and_only_accepts_complete_input() {
+        for (count, complete, expected) in [(0, false, 0), (0, true, 1), (MAX_ROUNDS, true, MAX_ROUNDS)] {
+            let ctx = egui::Context::default();
+            let mut app = fixture(&ctx, count);
+            if complete {
+                app.editor.slots = vec![0, 1, 2, 3];
+            }
+            let size = egui::vec2(1000.0, 700.0);
+            let texts = render(&mut app, &ctx, size, vec![]);
+            let pos = find(&texts, "添加记录").center();
+            for pressed in [true, false] {
+                render(&mut app, &ctx, size, vec![egui::Event::PointerMoved(pos), egui::Event::PointerButton {
+                    pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::default(),
+                }]);
+            }
+            assert_eq!(app.session.records.len(), expected);
+        }
+    }
+
+    #[test]
+    fn history_edit_button_opens_the_left_editor() {
+        let ctx = egui::Context::default();
+        let mut app = fixture(&ctx, 2);
+        let size = egui::vec2(1000.0, 700.0);
+        let texts = render(&mut app, &ctx, size, vec![]);
+        let pos = find(&texts, "编辑").center();
+        for pressed in [true, false] {
+            render(&mut app, &ctx, size, vec![egui::Event::PointerMoved(pos), egui::Event::PointerButton {
+                pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::default(),
+            }]);
+        }
+        assert_eq!(app.editor.editing, Some(0));
+        assert_eq!(app.editor.slots, app.session.records[0].guess);
+        let texts = render(&mut app, &ctx, size, vec![]);
+        assert!(find(&texts, "保存修改").right() < size.x / 2.0);
     }
 }

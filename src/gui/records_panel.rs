@@ -4,7 +4,9 @@
 use eframe::egui;
 
 use crate::Record;
-use crate::gui::{palette, primary_button, Assets, CachedAnalysis, MAX_ROUNDS, SessionState};
+use crate::gui::{palette, Assets, CachedAnalysis, MAX_ROUNDS, SessionState};
+
+pub const HISTORY_ROW_HEIGHT: f32 = 48.0;
 
 #[derive(Default)]
 pub struct RecordEditor {
@@ -21,29 +23,32 @@ impl RecordEditor {
     }
 }
 
-pub fn show(
+pub fn show_history(
     ui: &mut egui::Ui,
     assets: &Assets,
     session: &mut SessionState,
     editor: &mut RecordEditor,
-    cached: &CachedAnalysis,
     dirty: &mut bool,
 ) {
-    ui.heading("记录");
+    ui.heading("历史记录");
     if session.records.is_empty() {
         ui.label(egui::RichText::new(
-            format!("暂无记录;在下方录入第一条(共 {MAX_ROUNDS} 轮猜测机会),陪玩助手会实时给出候选与推荐"),
+            format!("暂无记录，请在左侧录入（共 {MAX_ROUNDS} 轮猜测机会）"),
         ).weak());
     } else {
         // 单行一条(开关 + 宝石 + 计数 + 操作),列表放滚动区,长列表不挤压下方编辑器
         egui::ScrollArea::vertical()
             .id_salt("records_list")
-            .max_height(200.0)
+            .max_height(ui.available_height().max(0.0))
             .show(ui, |ui| {
                 let mut delete = None;
                 let can_edit = session.records.len() < MAX_ROUNDS;
                 for (i, rec) in session.records.iter_mut().enumerate() {
-                    ui.horizontal(|ui| {
+                    // 先确定 48px 行高,让先绘制的勾选与序号也按宝石高度居中。
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(ui.available_width(), HISTORY_ROW_HEIGHT),
+                        egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true),
+                        |ui| {
                         if ui
                             .add(egui::Checkbox::new(&mut rec.enabled, ""))
                             .on_hover_text("禁用后此记录不参与过滤(矛盾排查)")
@@ -55,13 +60,10 @@ pub fn show(
                         // 禁用行宝石与计数变灰;开关和操作按钮保持可点
                         ui.add_enabled_ui(rec.enabled, |ui| {
                             for &g in &rec.guess {
-                                palette::small_gem(ui, assets, g);
+                                palette::gem_sized(ui, assets, g, HISTORY_ROW_HEIGHT);
                             }
                             // 反馈标按真实游戏排版:2 列图标块(蓝金上排,问号下排)
                             palette::marks_grid(ui, assets, rec.exact, rec.partial, rec.guess.len());
-                            if cached.suspects.contains(&i) {
-                                ui.colored_label(egui::Color32::RED, "嫌疑");
-                            }
                         });
                         // 轮次已用满时不再进入编辑(编辑区已切换为答案提交)
                 if can_edit && ui.small_button("编辑").clicked() {
@@ -88,9 +90,23 @@ pub fn show(
             });
     }
 
-    ui.add_space(6.0);
+}
+
+pub fn show_editor(
+    ui: &mut egui::Ui,
+    assets: &Assets,
+    session: &mut SessionState,
+    editor: &mut RecordEditor,
+    cached: &CachedAnalysis,
+    dirty: &mut bool,
+) {
     if session.records.len() >= MAX_ROUNDS {
-        answer_editor(ui, assets, session, cached);
+        answer_editor(ui, assets, session, cached, !*dirty);
+        record_button(ui, "添加记录", false)
+            .on_disabled_hover_text("已达到六条记录上限");
+        if cached.ready && !*dirty {
+            super::suspects_row(ui, &cached.suspects);
+        }
         return;
     }
 
@@ -121,9 +137,9 @@ pub fn show(
         }
         ui.separator();
         palette::mark_cycle_buttons(ui, assets, &mut editor.marks);
+    });
         // 常显图例:两个彩色反馈标的含义(细节仍在悬浮提示)
-        ui.separator();
-        ui.vertical(|ui| {
+        ui.horizontal_wrapped(|ui| {
             ui.horizontal(|ui| {
                 ui.image(egui::load::SizedTexture::new(assets.exact.id(), [16.0, 16.0]));
                 ui.label(egui::RichText::new("位置和颜色都对").weak().small());
@@ -133,10 +149,9 @@ pub fn show(
                 ui.label(egui::RichText::new("颜色对、位置错").weak().small());
             });
         });
-    });
     // 点击色盘依次填入空槽(标签独立一行,色盘另起一行)
     ui.label("点击填入:");
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         for color in 0..session.settings.colors as u8 {
             if palette::gem_button_big(ui, assets, color).clicked()
                 && editor.slots.len() < session.settings.slots
@@ -150,7 +165,7 @@ pub fn show(
     let candidate = Record { guess: editor.slots.clone(), exact, partial, enabled: true };
     let valid_and_full = editor.slots.len() == session.settings.slots
         && candidate.validate(&session.settings).is_ok();
-    if valid_and_full {
+    {
         // 规格 F4:「改」仅覆盖宝石与两个计数,保存时保留该行启用状态
         let enabled = match editor.editing {
             Some(i) => session.records[i].enabled,
@@ -158,7 +173,7 @@ pub fn show(
         };
         ui.horizontal(|ui| {
             if let Some(i) = editor.editing {
-                if primary_button(ui, "保存修改", egui::vec2(110.0, 30.0)).clicked() {
+                if record_button(ui, "保存修改", valid_and_full).clicked() {
                     session.records[i] = Record {
                         guess: candidate.guess.clone(),
                         exact: candidate.exact,
@@ -171,20 +186,25 @@ pub fn show(
                 if ui.button("取消").clicked() {
                     editor.reset();
                 }
-            } else if primary_button(ui, "添加记录", egui::vec2(110.0, 30.0)).clicked() {
-                session.records.push(candidate);
+            } else if record_button(ui, "添加记录", valid_and_full).clicked() {
+                session.records.push(candidate.clone());
                 editor.reset();
                 *dirty = true;
             }
         });
-    } else if editor.slots.len() == session.settings.slots {
+    }
+    if !valid_and_full && editor.slots.len() == session.settings.slots {
         // 已填满但计数不合法 → 红字提示,不给添加(§4.5)
         ui.colored_label(
             egui::Color32::RED,
             format!("计数不合法:{}", candidate.validate(&session.settings).unwrap_err()),
         );
-    } else {
+    } else if !valid_and_full {
         ui.label(egui::RichText::new("(请填满所有槽位)").weak());
+    }
+    // 包括保存编辑在内的所有操作结束后再展示,避免本帧的旧嫌疑结论。
+    if cached.ready && !*dirty {
+        super::suspects_row(ui, &cached.suspects);
     }
 }
 
@@ -195,6 +215,7 @@ fn answer_editor(
     assets: &Assets,
     session: &mut SessionState,
     cached: &CachedAnalysis,
+    current: bool,
 ) {
     ui.strong(format!("第 {} 轮:提交最终答案", MAX_ROUNDS + 1));
     ui.horizontal(|ui| {
@@ -212,7 +233,7 @@ fn answer_editor(
         }
     });
     ui.label("点击填入:");
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         for color in 0..session.settings.colors as u8 {
             if palette::gem_button_big(ui, assets, color).clicked()
                 && session.answer.len() < session.settings.slots
@@ -230,22 +251,81 @@ fn answer_editor(
     }
     let full = session.answer.clone();
     // 候选 = 与全部启用记录一致的组合,故"在候选中"等价于"与记录一致"
-    if cached.candidates.iter().any(|c| c == &full) {
-        if cached.candidates.len() == 1 {
+    match answer_verdict(cached, current, &full) {
+        AnswerVerdict::Pending => {
+            ui.label("正在核对最新记录，候选更新后自动校验答案…");
+        }
+        AnswerVerdict::Unique => {
             ui.colored_label(
                 egui::Color32::from_rgb(102, 187, 106),
-                "答案成立,且是唯一可能——推理正确!",
+                "在已启用记录准确的前提下，这是唯一符合记录的答案",
             );
-        } else {
+        }
+        AnswerVerdict::Possible(count) => {
             ui.colored_label(
                 crate::gui::ACCENT,
                 format!(
-                    "答案与全部记录一致,但仍有 {} 个候选同样成立,未必正确",
-                    cached.candidates.len()
+                    "答案与全部启用记录一致,但仍有 {} 个候选同样成立,尚不能确定正确",
+                    count
                 ),
             );
         }
+        AnswerVerdict::Contradiction => {
+            ui.colored_label(egui::Color32::RED, "答案与启用记录矛盾(不在剩余候选中)");
+        }
+    }
+}
+
+fn record_button(ui: &mut egui::Ui, label: &str, enabled: bool) -> egui::Response {
+    let (fill, text) = if enabled {
+        (super::ACCENT, egui::Color32::BLACK)
     } else {
-        ui.colored_label(egui::Color32::RED, "答案与记录矛盾(不在剩余候选中)");
+        (egui::Color32::from_gray(55), egui::Color32::from_gray(145))
+    };
+    ui.add_enabled(enabled, egui::Button::new((
+        egui::Atom::grow(),
+        egui::RichText::new(label).strong().size(14.0).color(text),
+        egui::Atom::grow(),
+    )).fill(fill).corner_radius(6).min_size(egui::vec2(120.0, 32.0)))
+}
+
+#[derive(Debug, PartialEq)]
+enum AnswerVerdict { Pending, Unique, Possible(usize), Contradiction }
+
+fn answer_verdict(cached: &CachedAnalysis, current: bool, answer: &[u8]) -> AnswerVerdict {
+    if !current || !cached.ready {
+        return AnswerVerdict::Pending;
+    }
+    if !cached.candidates.iter().any(|candidate| candidate == answer) {
+        return AnswerVerdict::Contradiction;
+    }
+    if cached.candidates.len() == 1 { AnswerVerdict::Unique } else { AnswerVerdict::Possible(cached.candidates.len()) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn editing_records_never_validates_against_an_old_unique_answer() {
+        let cached = CachedAnalysis { ready: true, candidates: vec![vec![2, 2, 2, 4]], ..Default::default() };
+        assert_eq!(answer_verdict(&cached, true, &[2, 2, 2, 4]), AnswerVerdict::Unique);
+        assert_eq!(answer_verdict(&cached, false, &[2, 2, 2, 4]), AnswerVerdict::Pending);
+        assert_eq!(answer_verdict(&cached, false, &[0; 4]), AnswerVerdict::Pending);
+    }
+
+    #[test]
+    fn unfiltered_cache_is_not_a_contradiction() {
+        let cached = CachedAnalysis::default();
+        assert_eq!(answer_verdict(&cached, true, &[0; 4]), AnswerVerdict::Pending);
+        let filtered = CachedAnalysis { ready: true, ..Default::default() };
+        assert_eq!(answer_verdict(&filtered, true, &[0; 4]), AnswerVerdict::Contradiction);
+    }
+
+    #[test]
+    fn multiple_matching_answers_are_not_presented_as_unique() {
+        let cached = CachedAnalysis { ready: true, candidates: vec![vec![1; 4], vec![2; 4]], ..Default::default() };
+        assert_eq!(answer_verdict(&cached, true, &[1; 4]), AnswerVerdict::Possible(2));
+        assert_eq!(answer_verdict(&cached, true, &[3; 4]), AnswerVerdict::Contradiction);
     }
 }

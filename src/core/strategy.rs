@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use rayon::prelude::*;
 
@@ -44,31 +45,56 @@ pub(crate) fn sample_guesses(space: &[Vec<u8>], n: usize) -> Vec<Vec<u8>> {
     chosen.into_iter().map(|i| space[i].clone()).collect()
 }
 
+#[cfg(test)]
 pub(crate) fn entropy_best(candidates: &[Vec<u8>], guesses: &[Vec<u8>]) -> (Vec<u8>, f64, usize) {
+    entropy_best_cancellable(candidates, guesses, &AtomicBool::new(false)).unwrap()
+}
+
+/// 同一个完整反馈分区支持熵、最坏桶和平均剩余候选数,避免重复判定。
+fn feedback_statistics(
+    guess: &[u8],
+    candidates: &[Vec<u8>],
+    cancelled: &AtomicBool,
+) -> Option<(f64, usize, f64)> {
+    let mut buckets: HashMap<(u8, u8), usize> = HashMap::new();
+    for (index, candidate) in candidates.iter().enumerate() {
+        if index % 128 == 0 && cancelled.load(Ordering::Relaxed) { return None; }
+        *buckets.entry(crate::core::judge::judge(guess, candidate)).or_default() += 1;
+    }
+    // 排序消除 HashMap 遍历序带来的浮点差异,保留原有平手裁决。
+    let mut sizes: Vec<usize> = buckets.values().copied().collect();
+    sizes.sort_unstable();
     let n = candidates.len() as f64;
+    let entropy_bits = -sizes.iter().map(|&count| {
+        let probability = count as f64 / n;
+        probability * probability.log2()
+    }).sum::<f64>();
+    let expected_remaining = sizes.iter().map(|&count| {
+        let count = count as f64;
+        count * count / n
+    }).sum::<f64>();
+    Some((entropy_bits, *sizes.last().expect("候选非空"), expected_remaining))
+}
+
+fn entropy_best_cancellable(
+    candidates: &[Vec<u8>],
+    guesses: &[Vec<u8>],
+    cancelled: &AtomicBool,
+) -> Option<(Vec<u8>, f64, usize)> {
+    if cancelled.load(Ordering::Relaxed) { return None; }
     let cand_set: std::collections::HashSet<&Vec<u8>> = candidates.iter().collect();
     // 各猜测的打分相互独立 → 并行计算;浮点求和仍在单猜测内按同一顺序完成,结果与串行逐位一致
-    let scores: Vec<(f64, usize, bool)> = guesses
+    let scores: Option<Vec<(f64, usize, bool)>> = guesses
         .par_iter()
         .map(|g| {
-            let mut buckets: HashMap<(u8, u8), usize> = HashMap::new();
-            for c in candidates {
-                *buckets.entry(crate::core::judge::judge(g, c)).or_insert(0) += 1;
-            }
-            // 对桶大小排序后求和,消除 HashMap 遍历序带来的浮点误差
-            let mut sizes: Vec<usize> = buckets.values().copied().collect();
-            sizes.sort_unstable();
-            let h = -sizes
-                .iter()
-                .map(|&v| { let p = v as f64 / n; p * p.log2() })
-                .sum::<f64>();
-            let worst = sizes[sizes.len() - 1];
-            (h, worst, cand_set.contains(g))
+            if cancelled.load(Ordering::Relaxed) { return None; }
+            let (h, worst, _) = feedback_statistics(g, candidates, cancelled)?;
+            Some((h, worst, cand_set.contains(g)))
         })
         .collect();
     // 按枚举序串行归约,保持原有平手裁决(先枚举序取首个 argmax,平手偏向候选集内)
     let mut best: Option<(Vec<u8>, f64, usize, bool)> = None; // (guess, 熵, 最坏桶, 是否属候选集)
-    for (g, (h, worst, in_cand)) in guesses.iter().zip(scores) {
+    for (g, (h, worst, in_cand)) in guesses.iter().zip(scores?) {
         let replace = match &best {
             None => true,
             Some((_, bh, _, b_in)) => {
@@ -80,14 +106,16 @@ pub(crate) fn entropy_best(candidates: &[Vec<u8>], guesses: &[Vec<u8>]) -> (Vec<
         }
     }
     let (g, h, w, _) = best.expect("guesses 非空");
-    (g, h, w)
+    if cancelled.load(Ordering::Relaxed) { return None; }
+    Some((g, h, w))
 }
 
 pub const LOOKAHEAD_CANDIDATE_LIMIT: usize = 30;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Bound {
-    /// 精确前瞻:最多还需 N 步(含本次猜测)
+    /// 全候选前瞻证明:最多还需 N 步(含本次猜测和最终提交)。
+    /// 搜索可能只覆盖部分合法猜测,此上界不声称全局最优。
     GuaranteedSteps(usize),
     /// 熵推荐:期望参考,非保证(期望信息量 bits / 最坏桶大小)
     Expected { entropy_bits: f64, worst_bucket: usize },
@@ -97,6 +125,47 @@ pub enum Bound {
 pub enum Recommendation {
     Answer(Vec<u8>),                          // 剩余候选唯一
     Guess { guess: Vec<u8>, bound: Bound },   // 推荐猜测 + 最坏情况说明
+}
+
+/// 指标均覆盖全部当前候选;期望值假设这些候选等可能。
+#[derive(Debug, Clone, PartialEq)]
+pub struct RecommendationEvidence {
+    pub candidate_count: usize,
+    pub is_possible_answer: bool,
+    pub expected_remaining: f64,
+    pub worst_bucket: usize,
+    pub entropy_bits: f64,
+    /// 搜索猜测或评分候选使用了采样,不表示显示指标是采样估计。
+    pub sampled_search: bool,
+}
+
+pub fn recommendation_evidence(
+    settings: &Settings,
+    candidates: &[Vec<u8>],
+    recommendation: &Recommendation,
+) -> RecommendationEvidence {
+    assert!(!candidates.is_empty(), "推荐证据要求候选非空");
+    let guess = match recommendation {
+        Recommendation::Answer(answer) => answer,
+        Recommendation::Guess { guess, .. } => guess,
+    };
+    let (entropy_bits, worst_bucket, expected_remaining) =
+        feedback_statistics(guess, candidates, &AtomicBool::new(false)).unwrap();
+    let possible_guesses = if settings.repeats {
+        settings.colors.pow(settings.slots as u32)
+    } else {
+        (0..settings.slots).map(|offset| settings.colors - offset).product()
+    };
+    RecommendationEvidence {
+        candidate_count: candidates.len(),
+        is_possible_answer: candidates.contains(guess),
+        expected_remaining,
+        worst_bucket,
+        entropy_bits,
+        sampled_search: matches!(recommendation, Recommendation::Guess { .. })
+            && candidates.len() > 2
+            && (possible_guesses > FULL_SPACE_LIMIT || candidates.len() > FULL_SPACE_LIMIT),
+    }
 }
 
 /// 公开入口(§4.4):过滤出候选后分层推荐。
@@ -111,7 +180,21 @@ pub fn recommend(settings: &Settings, records: &[Record]) -> Recommendation {
 
 /// 由已知候选集直接推荐(GUI 每帧缓存后调用;要求候选非空)。
 pub(crate) fn recommend_for(settings: &Settings, candidates: &[Vec<u8>]) -> Recommendation {
-    match candidates.len() {
+    recommend_for_cancellable(settings, candidates, &AtomicBool::new(false)).unwrap()
+}
+
+/// 先提供熵建议,不等待小候选集合的前瞻证明。
+pub fn recommend_quick_for(settings: &Settings, candidates: &[Vec<u8>]) -> Recommendation {
+    recommend_quick_for_cancellable(settings, candidates, &AtomicBool::new(false)).unwrap()
+}
+
+pub(crate) fn recommend_quick_for_cancellable(
+    settings: &Settings,
+    candidates: &[Vec<u8>],
+    cancelled: &AtomicBool,
+) -> Option<Recommendation> {
+    if cancelled.load(Ordering::Relaxed) { return None; }
+    let recommendation = match candidates.len() {
         0 => panic!("recommend_for: 候选为空属于矛盾,调用方(solve/GUI)应先检查"),
         1 => Recommendation::Answer(candidates[0].clone()),
         2 => Recommendation::Guess {
@@ -119,38 +202,56 @@ pub(crate) fn recommend_for(settings: &Settings, candidates: &[Vec<u8>]) -> Reco
             guess: candidates[0].clone(),
             bound: Bound::GuaranteedSteps(2),
         },
-        n if n <= LOOKAHEAD_CANDIDATE_LIMIT => {
-            let guesses = guess_space(settings);
-            if let Some((guess, steps)) = lookahead_best(candidates, &guesses, 3) {
-                Recommendation::Guess { guess, bound: Bound::GuaranteedSteps(steps) }
-            } else {
-                // 深度上限内无法给出保证(理论下不会发生):回退熵推荐并如实标注为期望值
-                let (guess, h, worst) = entropy_pick(settings, candidates);
-                Recommendation::Guess {
-                    guess,
-                    bound: Bound::Expected { entropy_bits: h, worst_bucket: worst },
-                }
-            }
-        }
         _ => {
-            let (guess, h, worst) = entropy_pick(settings, candidates);
+            let (guess, h, worst) = entropy_pick_cancellable(settings, candidates, cancelled)?;
             Recommendation::Guess {
                 guess,
                 bound: Bound::Expected { entropy_bits: h, worst_bucket: worst },
             }
         }
-    }
+    };
+    if cancelled.load(Ordering::Relaxed) { return None; }
+    Some(recommendation)
 }
 
-/// 熵层打分:极端配置下候选侧同样固定种子采样,保证同步计算秒级内(§4.4)。
-/// 仅用于打分;Bound::Expected 本就标注为期望参考而非保证。
+/// 取消会使本次搜索返回 None,不会将未完成搜索当作步数保证。
+pub(crate) fn recommend_for_cancellable(
+    settings: &Settings,
+    candidates: &[Vec<u8>],
+    cancelled: &AtomicBool,
+) -> Option<Recommendation> {
+    if cancelled.load(Ordering::Relaxed) { return None; }
+    if (3..=LOOKAHEAD_CANDIDATE_LIMIT).contains(&candidates.len()) {
+        let guesses = guess_space(settings);
+        let result = lookahead_best_cancellable(candidates, &guesses, 3, cancelled);
+        if cancelled.load(Ordering::Relaxed) { return None; }
+        if let Some((guess, steps)) = result {
+            return Some(Recommendation::Guess { guess, bound: Bound::GuaranteedSteps(steps) });
+        }
+        // 预算内没有证明时如实回退到熵建议。
+    }
+    recommend_quick_for_cancellable(settings, candidates, cancelled)
+}
+
+/// 大空间采样只决定选哪个猜测;返回的指标始终在全部候选上复核。
+#[cfg(test)]
 fn entropy_pick(settings: &Settings, candidates: &[Vec<u8>]) -> (Vec<u8>, f64, usize) {
+    entropy_pick_cancellable(settings, candidates, &AtomicBool::new(false)).unwrap()
+}
+
+fn entropy_pick_cancellable(
+    settings: &Settings,
+    candidates: &[Vec<u8>],
+    cancelled: &AtomicBool,
+) -> Option<(Vec<u8>, f64, usize)> {
+    if cancelled.load(Ordering::Relaxed) { return None; }
     let guesses = guess_space(settings);
     if candidates.len() > FULL_SPACE_LIMIT {
         let sampled = sample_guesses(candidates, SAMPLE_SIZE);
-        entropy_best(&sampled, &guesses)
+        let (guess, _, _) = entropy_best_cancellable(&sampled, &guesses, cancelled)?;
+        entropy_best_cancellable(candidates, &[guess], cancelled)
     } else {
-        entropy_best(candidates, &guesses)
+        entropy_best_cancellable(candidates, &guesses, cancelled)
     }
 }
 
@@ -191,12 +292,14 @@ fn lookahead_steps(
     terminal: (u8, u8),
     budget: usize,
     memo: &SharedMemo,
+    cancelled: &AtomicBool,
 ) -> Option<usize> {
-    if cands.len() == 1 {
-        return Some(1); // 已知答案,提交 1 次
-    }
+    if cancelled.load(Ordering::Relaxed) { return None; }
     if budget == 0 {
         return None;
+    }
+    if cands.len() == 1 {
+        return Some(1); // 已知答案仍需在预算内提交 1 次
     }
     let key = (budget, cands.iter().flat_map(|c| c.iter().copied()).collect::<Vec<u8>>());
     if let Some(cached) = memo.get(&key) {
@@ -204,6 +307,7 @@ fn lookahead_steps(
     }
     let mut best: Option<usize> = None;
     for g in guesses {
+        if cancelled.load(Ordering::Relaxed) { return None; }
         let mut buckets: HashMap<(u8, u8), Vec<Vec<u8>>> = HashMap::new();
         for c in cands {
             buckets.entry(crate::core::judge::judge(g, c)).or_default().push(c.clone());
@@ -214,7 +318,7 @@ fn lookahead_steps(
             if *fb == terminal {
                 continue; // 猜中答案,终局
             }
-            match lookahead_steps(bucket, guesses, terminal, budget - 1, memo) {
+            match lookahead_steps(bucket, guesses, terminal, budget - 1, memo, cancelled) {
                 Some(v) => worst = worst.max(v),
                 None => {
                     provable = false;
@@ -228,7 +332,10 @@ fn lookahead_steps(
                 best = Some(total);
             }
         }
+        // 多候选至少还需两次提交;达到下界后不必继续扫描子问题。
+        if best == Some(2) { break; }
     }
+    if cancelled.load(Ordering::Relaxed) { return None; }
     memo.insert(key, best);
     best
 }
@@ -242,8 +349,9 @@ fn worst_after_guess(
     terminal: (u8, u8),
     budget: usize,
     memo: &SharedMemo,
+    cancelled: &AtomicBool,
 ) -> Option<usize> {
-    if budget == 0 {
+    if budget == 0 || cancelled.load(Ordering::Relaxed) {
         return None;
     }
     let mut buckets: HashMap<(u8, u8), Vec<Vec<u8>>> = HashMap::new();
@@ -255,31 +363,43 @@ fn worst_after_guess(
         if *fb == terminal {
             continue;
         }
-        worst = worst.max(lookahead_steps(bucket, guesses, terminal, budget - 1, memo)?);
+        worst = worst.max(lookahead_steps(bucket, guesses, terminal, budget - 1, memo, cancelled)?);
     }
     Some(worst)
 }
 
 /// minimax 前瞻:返回保证最少剩余步数(含本次猜测)的猜测与该步数;
-/// 深度预算用尽无法证明 → None(理论下 ≤30 候选、cap=3 不会发生)。
+/// 深度预算用尽无法证明 → None;采样 guesses 时只在此搜索范围内优化。
 /// 步数语义:steps(C)=1+min_g max_{非终局桶} steps(桶);反馈=(slots,0) 为终局桶;
 /// 单候选桶 steps=1(直接提交)。
 /// 并行化:根层各猜测独立评估 → rayon 并行;子问题经分片共享 memo 全局复用
 /// (原串行版提速关键);min 归约与平手裁决(先枚举序取首个达成者)串行确定,
 /// 结果与串行版逐位一致。
+#[cfg(test)]
 pub(crate) fn lookahead_best(
     candidates: &[Vec<u8>],
     guesses: &[Vec<u8>],
     depth_cap: usize,
 ) -> Option<(Vec<u8>, usize)> {
+    lookahead_best_cancellable(candidates, guesses, depth_cap, &AtomicBool::new(false))
+}
+
+fn lookahead_best_cancellable(
+    candidates: &[Vec<u8>],
+    guesses: &[Vec<u8>],
+    depth_cap: usize,
+    cancelled: &AtomicBool,
+) -> Option<(Vec<u8>, usize)> {
+    if cancelled.load(Ordering::Relaxed) { return None; }
     debug_assert!(!candidates.is_empty() && !guesses.is_empty());
     let slots = candidates[0].len() as u8;
     let terminal = (slots, 0);
     let memo = SharedMemo::new();
     let totals: Vec<Option<usize>> = guesses
         .par_iter()
-        .map(|g| worst_after_guess(g, candidates, guesses, terminal, depth_cap, &memo))
+        .map(|g| worst_after_guess(g, candidates, guesses, terminal, depth_cap, &memo, cancelled))
         .collect();
+    if cancelled.load(Ordering::Relaxed) { return None; }
     let best = totals.iter().filter_map(|t| *t).map(|w| 1 + w).min()?;
     // 平手裁决:枚举序中第一个达成保证步数的猜测
     let idx = totals.iter().position(|t| t.map_or(false, |w| 1 + w == best))?;
@@ -372,6 +492,110 @@ mod tests {
     fn lookahead_depth0_falls_back_to_none() {
         let guesses = default_space();
         assert_eq!(lookahead_best(&c3(), &guesses, 0), None);
+    }
+
+    #[test]
+    fn lookahead_cannot_submit_a_singleton_after_depth_budget_expires() {
+        let guesses = default_space();
+        assert_eq!(lookahead_best(&c3(), &guesses, 1), None);
+        assert_eq!(lookahead_best(&c3(), &guesses, 2), Some((vec![0, 0, 0, 0], 2)));
+    }
+
+    #[test]
+    fn sampled_selection_reports_the_full_candidate_worst_bucket() {
+        let settings = Settings { colors: 8, slots: 5, repeats: true };
+        let candidates = enumerate_space(&settings);
+        let (guess, _, reported_worst) = entropy_pick(&settings, &candidates);
+        let mut actual_buckets = HashMap::new();
+        for candidate in &candidates {
+            *actual_buckets.entry(crate::core::judge::judge(&guess, candidate)).or_insert(0) += 1;
+        }
+        assert_eq!(reported_worst, *actual_buckets.values().max().unwrap());
+    }
+
+    #[test]
+    fn quick_recommendation_is_actionable_before_lookahead() {
+        let settings = Settings::default();
+        let candidates = ab_candidates();
+        assert!(matches!(
+            recommend_quick_for(&settings, &candidates),
+            Recommendation::Guess { guess, bound: Bound::Expected { worst_bucket: 5, .. } }
+                if guess == vec![3, 4, 4, 1]
+        ));
+        assert_eq!(recommend_quick_for(&settings, &candidates[..1]), Recommendation::Answer(candidates[0].clone()));
+        assert!(matches!(
+            recommend_quick_for(&settings, &candidates[..2]),
+            Recommendation::Guess { bound: Bound::GuaranteedSteps(2), .. }
+        ));
+    }
+
+    #[test]
+    fn evidence_explains_diagnostic_guesses_and_all_candidate_partitions() {
+        let settings = Settings::default();
+        let candidates = ab_candidates();
+        let rec = recommend_quick_for(&settings, &candidates);
+        let evidence = recommendation_evidence(&settings, &candidates, &rec);
+        assert_eq!(evidence.candidate_count, 24);
+        assert!(!evidence.is_possible_answer);
+        assert!(!evidence.sampled_search);
+        let guess = match &rec { Recommendation::Guess { guess, .. } => guess, _ => unreachable!() };
+        let mut counts = HashMap::new();
+        for candidate in &candidates {
+            *counts.entry(crate::core::judge::judge(guess, candidate)).or_insert(0usize) += 1;
+        }
+        let expected = counts.values().map(|&count| (count * count) as f64 / 24.0).sum::<f64>();
+        assert!((evidence.expected_remaining - expected).abs() < 1e-12);
+        assert_eq!(evidence.worst_bucket, 5);
+        assert!((evidence.entropy_bits - 3.173_533).abs() < 1e-4);
+    }
+
+    #[test]
+    fn evidence_discloses_sampling_only_for_searched_recommendations() {
+        let settings = Settings { colors: 8, slots: 5, repeats: true };
+        let candidates = enumerate_space(&settings);
+        let rec = recommend_quick_for(&settings, &candidates);
+        let evidence = recommendation_evidence(&settings, &candidates, &rec);
+        assert!(evidence.sampled_search);
+        assert!(evidence.is_possible_answer);
+        assert_eq!(evidence.candidate_count, 32768);
+        assert!(matches!(rec, Recommendation::Guess { bound: Bound::Expected { entropy_bits, worst_bucket }, .. }
+            if entropy_bits == evidence.entropy_bits && worst_bucket == evidence.worst_bucket));
+        for count in 1..=2 {
+            let rec = recommend_quick_for(&settings, &candidates[..count]);
+            let evidence = recommendation_evidence(&settings, &candidates[..count], &rec);
+            assert!(!evidence.sampled_search);
+            assert!(evidence.is_possible_answer);
+        }
+    }
+
+    #[test]
+    fn cancelled_recommendation_never_publishes_a_result() {
+        let cancelled = std::sync::atomic::AtomicBool::new(true);
+        let settings = Settings::default();
+        let candidates = default_space();
+        for count in [1, 2, 24, candidates.len()] {
+            assert_eq!(recommend_for_cancellable(&settings, &candidates[..count], &cancelled), None);
+        }
+    }
+
+    #[test]
+    fn cancellation_interrupts_search_in_progress() {
+        use std::sync::{Arc, Barrier};
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let settings = Settings { colors: 8, slots: 6, repeats: true };
+        let candidates = enumerate_space(&settings);
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let started = Arc::new(Barrier::new(2));
+        let worker_cancelled = cancelled.clone();
+        let worker_started = started.clone();
+        let worker = std::thread::spawn(move || {
+            worker_started.wait();
+            recommend_for_cancellable(&settings, &candidates[..30], &worker_cancelled)
+        });
+        started.wait();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        cancelled.store(true, Ordering::Relaxed);
+        assert_eq!(worker.join().unwrap(), None);
     }
 
     #[test]
