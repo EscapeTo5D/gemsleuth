@@ -2,6 +2,9 @@
 name = "gemsleuth"
 version = "0.1.0"
 edition = "2024"
+description = "宝石推理求解器：Mastermind 式宝石谜题的整卷求解与陪玩助手"
+license = "MIT"
+repository = "https://github.com/EscapeTo5D/gemsleuth"
 
 [lib]
 name = "gemsleuth"
